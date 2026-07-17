@@ -12,6 +12,8 @@
 		type Message,
 		type ToolResult
 	} from '@lostgradient/cinder/chat';
+	// upstream: stevekinney/cinder#753 — drop the direct conversationalist import once
+	// Chat re-exports what we need.
 	import { isJSONValue } from 'conversationalist';
 	import {
 		appendStreamingMessage,

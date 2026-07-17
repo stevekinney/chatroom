@@ -14,7 +14,8 @@
 		"format": "prettier --write .",
 		"test:e2e": "playwright install && playwright test",
 		"test": "bun run test:e2e",
-		"sync:cinder": "bun scripts/sync-cinder.ts"
+		"sync:cinder": "bun scripts/sync-cinder.ts",
+		"check:upstream": "bun scripts/check-upstream-issues.ts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -37,6 +38,8 @@
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.112.1",
+		"@lasercat/homogenaize": "^1.2.41",
+		"armorer": "^0.8.2",
 		"conversationalist": "^0.2.1",
 		"lucide-svelte": "0.577.0",
 		"zod": "4.4.1"

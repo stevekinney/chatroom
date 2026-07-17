@@ -111,15 +111,20 @@ these, check status instead:
   component, which silently misbehaves if forgotten or misordered. The ask is for components to
   bring their own CSS automatically.
 
-## Filing and resolving upstream cinder issues
+## Filing and resolving upstream issues
 
-When something in Cinder gets in the way, file it — `gh issue create` against
-`stevekinney/cinder`, with a clear repro and the requested fix (see #753/#754 above for the
-shape). Don't work around it locally or patch-monkey it here.
+When something in an upstream dependency gets in the way, file it — `gh issue create` against
+the repo that owns it, with a clear repro and the requested fix (see #753/#754 above for the
+shape). Don't work around it locally or patch-monkey it here. Route by package:
 
-The full loop from filed issue to updated `chatroom`:
+- `@lostgradient/cinder` → `stevekinney/cinder`
+- `conversationalist` or `armorer` → `stevekinney/agent-bureau` (both packages live in that
+  monorepo, under `packages/conversationalist` and `packages/armorer`)
 
-1. **File** the issue against `stevekinney/cinder`.
+The full loop from filed issue to updated `chatroom` (described here for Cinder; the
+agent-bureau loop is the same shape, just without a `sync:*` script yet — sync manually):
+
+1. **File** the issue against the owning repo.
 2. **Fix and merge**, driven from inside `../cinder` (not here) — the `ralph-pipeline` skill runs
    the worktree → work agent → PR → CI/review-stabilization → merge loop against a task file
    derived from the open issues.
