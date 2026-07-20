@@ -6,10 +6,15 @@
 
 ## Purpose
 
-This project exists to kick the tires on the `Chat` component from `@lostgradient/cinder`
-(linked from `../cinder`) and drive it with the Anthropic SDK, working toward a best-in-class
-chat experience. It is a testbed, not a product — expect the demo route and conversation wiring
-to change often as we try things against the real component.
+This project exists to kick the tires on the `Chat` component from `@lostgradient/chat`
+(linked from `../cinder/packages/chat`) and drive it with the Anthropic SDK, working toward a
+best-in-class chat experience. It is a testbed, not a product — expect the demo route and
+conversation wiring to change often as we try things against the real component.
+
+As of Cinder 0.16, `Chat` lives in its own package, `@lostgradient/chat`, which peer-depends on
+`@lostgradient/cinder` (the design primitives), `conversationalist`, `zod`, and `svelte`.
+`@lostgradient/cinder` is still linked and still supplies the base styles; it's just no longer
+where `Chat` itself comes from.
 
 ## Working across `chatroom` and `../cinder`
 
@@ -18,26 +23,41 @@ consumer in `chatroom` side by side, or checking out a Cinder worktree to test a
 change here. `.claude/settings.local.json` already grants access to `../cinder` as an additional
 directory.
 
-**The link is a `bun link`, not a registry dependency.** `@lostgradient/cinder` does not appear
-in `package.json` — it's resolved via Bun's global link registry:
+**The links are `bun link`s, not registry dependencies.** Neither `@lostgradient/cinder` nor
+`@lostgradient/chat` appears in `package.json` — both resolve via Bun's global link registry.
+Link them in a **single** `bun link` call: linking one at a time flips the previously-linked
+package back to its registry version (a real Bun quirk).
 
 ```bash
 # One-time setup, or after checking out a different cinder worktree:
 cd ../cinder/packages/components && bun link
-cd ../../../chatroom && bun link @lostgradient/cinder
+cd ../chat && bun link
+cd ../../../chatroom && bun link @lostgradient/cinder @lostgradient/chat
 ```
 
-`bun link @lostgradient/cinder` re-points the symlink at whatever `bun link` was last run from
-inside `cinder/packages/components` — so to test against a worktree instead of the main
-checkout, re-run `bun link` from that worktree's `packages/components` and re-run
-`bun link @lostgradient/cinder` here. A plain `bun install` does not remove this link.
+Re-running `bun link @lostgradient/<pkg>` here re-points the symlink at whatever `bun link` was
+last run from inside that package — so to test against a worktree, re-run `bun link` from that
+worktree's `packages/<pkg>` and re-link both here in one call. A plain `bun install` does not
+remove these links. After any re-link, confirm both survived: `test -d
+node_modules/@lostgradient/cinder/src && test -d node_modules/@lostgradient/chat/src`.
 
-**No build step required.** Cinder's package exports include a `svelte` condition pointing at
-`src/**/*.ts` (not `dist/`), and Vite/SvelteKit respect that condition. Editing a `.svelte` or
-`.ts` file under `../cinder/packages/components/src` is picked up immediately by `chatroom`'s
-dev server — no `bun run build` in cinder, no watch process. Verified: `bun run dev` here SSRs
-and hydrates `<Chat>` straight from Cinder's source with no `server.fs.allow` errors, even
-though the symlink resolves outside this project's root.
+**Live source, but with two setup requirements the old single-package layout didn't have:**
+
+- **Build `@lostgradient/chat`'s CSS once** — `bun run --filter=@lostgradient/chat build` from
+  `../cinder`. The `.` entry resolves to source (its `svelte` export condition points at
+  `src/lib/index.ts`), so component edits are picked up live with no watch. But
+  `@lostgradient/chat/styles` has **only** a `dist` condition
+  (`dist/components/chat/chat.css`), so the CSS won't resolve until that dist exists. The build
+  does not rewrite `package.json` (the export-map rewrite to `dist` happens at publish time, in
+  `pack-for-publish.ts`), so the `.` entry stays pointed at source afterward.
+- **`vite.config.ts` pins SSR to the source condition** — see the `ssr` block there. Both
+  packages list `node` before `svelte` in their export maps, so left externalized, SSR resolves
+  them into each package's prebuilt `dist/server` bundle (which also pulls in Cinder server
+  artifacts that a plain source checkout hasn't built, e.g. `@lostgradient/cinder/icons`).
+  `ssr.noExternal` plus `ssr.resolve.conditions` without `node` makes the `svelte` source
+  condition win, so SSR and client hydrate from the _same_ source. Verified: `bun run dev` SSRs
+  and hydrates `<Chat>` from live source with a clean console (no hydration mismatch), and the
+  `/api/chat` Anthropic stream still resolves `@anthropic-ai/sdk` fine under those conditions.
 
 ## Using the Chat component
 
@@ -61,12 +81,13 @@ assuming either is optional:
    component:
 
    ```ts
-   import { Chat } from '@lostgradient/cinder/chat';
-   import '@lostgradient/cinder/chat/styles';
+   import { Chat } from '@lostgradient/chat';
+   import '@lostgradient/chat/styles';
    ```
 
    Compound components (Chat's own conversation-header, conversation-list, composer-popover,
-   etc.) ship their styles from the parent subpath, so importing `chat/styles` covers those too.
+   etc.) ship their styles from the parent subpath, so importing `@lostgradient/chat/styles`
+   covers those too.
 
 Conversation data flows through **`conversationalist`**, which Chat re-exports type-wise but
 which we currently must also install directly (`conversationalist`, `zod`) per Cinder's own
@@ -79,12 +100,12 @@ import {
 	appendAssistantMessage,
 	appendUserMessage,
 	createConversation
-} from '@lostgradient/cinder/chat';
+} from '@lostgradient/chat';
 ```
 
 For anything beyond the plain `onsubmit`/`onretry`/`onedit` callback props — streaming,
 real-time push, tool-call approval — wire a `ChatAdapter`
-(`@lostgradient/cinder/chat` → `chat-adapter.ts`). It's an optional event/transport seam around
+(`@lostgradient/chat` → `chat-adapter.ts`). It's an optional event/transport seam around
 the same `conversation` prop, not a second conversation model; only `sendMessage` is required.
 
 ## Driving Chat with the Anthropic SDK
@@ -134,6 +155,15 @@ agent-bureau loop is the same shape, just without a `sync:*` script yet — sync
    if that checkout has uncommitted changes or isn't on `main`, and it stops — rather than
    reporting success — if anything fails after the pull, since a red check right after a sync
    means a new cinder commit broke something here.
+
+**Verify state after filing or commenting — don't assume a comment means "tracked."** A GitHub
+issue can be closed by something else (a bulk sweep tied to an unrelated release, another
+session, a maintainer skimming) immediately after your comment lands, even when that comment
+says the bug is still present. After `gh issue create` or `gh issue comment`, check the actual
+state with `gh issue view <number> --repo <owner/repo> --json state`. If your comment describes
+something that still reproduces and the issue shows closed, reopen it (`gh issue reopen <number>
+--repo <owner/repo> --comment '...'`) with a short note — a closed issue is not a valid record of
+an unresolved bug, no matter what the last comment on it says.
 
 ## Commands
 

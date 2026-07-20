@@ -8,6 +8,7 @@ import { $ } from 'bun';
 
 const cinderPath = process.argv[2] ?? '../cinder';
 const componentsPath = `${cinderPath}/packages/components`;
+const chatPath = `${cinderPath}/packages/chat`;
 const full = process.argv.includes('--full');
 
 function fail(message: string): never {
@@ -51,9 +52,29 @@ if (before === after) {
 	console.log(await $`git -C ${cinderPath} log --oneline ${before}..${after}`.text());
 }
 
-console.log('Re-linking @lostgradient/cinder...');
+// Chat lives in its own package as of Cinder 0.16 and its `/styles` subpath
+// resolves only from dist — rebuild that CSS before verifying.
+console.log('Rebuilding @lostgradient/chat (for its dist CSS)...');
+const chatBuild = await $`bun run --filter=@lostgradient/chat build`.cwd(cinderPath).nothrow();
+if (chatBuild.exitCode !== 0) {
+	fail('Building @lostgradient/chat failed — its /styles CSS will not resolve. Investigate.');
+}
+
+// Register both packages, then link them in a SINGLE call: linking one at a
+// time flips the previously-linked package back to its registry version.
+console.log('Re-linking @lostgradient/cinder and @lostgradient/chat...');
 await $`bun link`.cwd(componentsPath).quiet();
-await $`bun link @lostgradient/cinder`.quiet();
+await $`bun link`.cwd(chatPath).quiet();
+await $`bun link @lostgradient/cinder @lostgradient/chat`.quiet();
+
+if (
+	!existsSync('node_modules/@lostgradient/cinder/src') ||
+	!existsSync('node_modules/@lostgradient/chat/src')
+) {
+	fail(
+		'A link reverted to its registry version (no src/ in node_modules) — re-link both in one call.'
+	);
+}
 console.log('Link OK.\n');
 
 console.log('Running chatroom verification...\n');

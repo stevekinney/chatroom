@@ -1,44 +1,36 @@
 <script lang="ts">
-	import '@lostgradient/cinder/chat/styles';
+	import '@lostgradient/chat/styles';
 
 	import {
 		Chat,
 		appendMessages,
+		appendStreamingMessage,
+		cancelStreamingMessage,
 		createConversation,
-		getMessageText,
+		finalizeStreamingMessage,
+		updateStreamingMessage,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
 		type ConversationHistory,
-		type Message,
 		type ToolResult
-	} from '@lostgradient/cinder/chat';
-	// upstream: stevekinney/cinder#753 — drop the direct conversationalist import once
-	// Chat re-exports what we need.
+	} from '@lostgradient/chat';
 	import { isJSONValue } from 'conversationalist';
-	import {
-		appendStreamingMessage,
-		cancelStreamingMessage,
-		finalizeStreamingMessage,
-		updateStreamingMessage
-	} from 'conversationalist/streaming';
+	import { SvelteMap } from 'svelte/reactivity';
 
-	import { getTool } from '$lib/tools';
-
-	type AnthropicTextBlock = { type: 'text'; text: string };
-	type AnthropicToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown };
-	type AnthropicToolResultBlock = {
-		type: 'tool_result';
-		tool_use_id: string;
-		content: string;
-		is_error?: boolean;
-	};
-	type AnthropicMessage =
-		| { role: 'user'; content: (AnthropicTextBlock | AnthropicToolResultBlock)[] }
-		| { role: 'assistant'; content: (AnthropicTextBlock | AnthropicToolUseBlock)[] };
+	import type { SignedPendingToolApproval } from 'armorer';
 
 	type TextEvent = { type: 'text'; text: string };
-	type ToolUseEvent = { type: 'tool_use'; id: string; name: string; input: unknown };
-	type StreamEvent = TextEvent | ToolUseEvent;
+	type ToolCallEvent = { type: 'tool_call'; id: string; name: string; arguments: unknown };
+	type ToolResultEvent = {
+		type: 'tool_result';
+		callId: string;
+		outcome: ToolResult['outcome'];
+		content: unknown;
+		error?: ToolResult['error'];
+		action?: ToolResult['action'];
+		pendingApproval?: SignedPendingToolApproval;
+	};
+	type StreamEvent = TextEvent | ToolCallEvent | ToolResultEvent;
 
 	const MAX_TOOL_TURNS = 5;
 
@@ -46,87 +38,18 @@
 	let chat: ReturnType<typeof Chat> | undefined;
 	// Plain `let`: reset per user turn, read only inside runTurn's own recursion.
 	let turnCount = 0;
+	// Plain `let`: server-issued approval descriptors, needed only to resume
+	// on approve. Not part of the rendered transcript.
+	const pendingApprovals = new SvelteMap<string, SignedPendingToolApproval>();
 
 	let conversation = $state<ConversationHistory>(createConversation({ id: 'chatroom-demo' }));
 	let error = $state<string | null>(null);
 	let streaming = $state(false);
 
-	function toAnthropicHistory(history: ConversationHistory): AnthropicMessage[] {
-		const result: AnthropicMessage[] = [];
-		let pendingAssistant: (AnthropicTextBlock | AnthropicToolUseBlock)[] = [];
-
-		function flushAssistant(): void {
-			if (pendingAssistant.length === 0) return;
-			result.push({ role: 'assistant', content: pendingAssistant });
-			pendingAssistant = [];
-		}
-
-		for (const id of history.ids) {
-			const message = history.messages[id];
-			if (!message || message.hidden) continue;
-
-			if (message.role === 'user') {
-				flushAssistant();
-				result.push({ role: 'user', content: [{ type: 'text', text: getMessageText(message) }] });
-				continue;
-			}
-
-			if (message.role === 'assistant') {
-				const text = getMessageText(message);
-				if (text) pendingAssistant.push({ type: 'text', text });
-				continue;
-			}
-
-			if (message.role === 'tool-call' && message.toolCall) {
-				pendingAssistant.push({
-					type: 'tool_use',
-					id: message.toolCall.id,
-					name: message.toolCall.name,
-					input: message.toolCall.arguments
-				});
-				continue;
-			}
-
-			if (message.role === 'tool-result' && message.toolResult) {
-				// Never sent to the model — runTurn only calls the API once every
-				// pending approval has resolved.
-				if (message.toolResult.outcome === 'action_required') continue;
-
-				flushAssistant();
-				result.push({
-					role: 'user',
-					content: [
-						{
-							type: 'tool_result',
-							tool_use_id: message.toolResult.callId,
-							content:
-								message.toolResult.outcome === 'error'
-									? (message.toolResult.error?.message ?? 'Tool execution failed.')
-									: JSON.stringify(message.toolResult.content),
-							is_error: message.toolResult.outcome === 'error'
-						}
-					]
-				});
-			}
-		}
-
-		flushAssistant();
-		return result;
-	}
-
 	function hasUnresolvedApprovals(history: ConversationHistory): boolean {
 		return Object.values(history.messages).some(
 			(message) =>
 				message.role === 'tool-result' && message.toolResult?.outcome === 'action_required'
-		);
-	}
-
-	function findToolCallMessage(
-		history: ConversationHistory,
-		toolCallId: string
-	): Message | undefined {
-		return Object.values(history.messages).find(
-			(message) => message.role === 'tool-call' && message.toolCall?.id === toolCallId
 		);
 	}
 
@@ -153,40 +76,14 @@
 		};
 	}
 
-	function buildToolResultInput(toolName: string, input: unknown): Omit<ToolResult, 'callId'> {
-		const tool = getTool(toolName);
-
-		if (!tool) {
-			return {
-				outcome: 'error',
-				content: null,
-				error: {
-					code: 'unknown_tool',
-					category: 'not_found',
-					retryable: false,
-					message: `No tool named "${toolName}" is registered.`
-				}
-			};
-		}
-
-		try {
-			const result = tool.execute(input);
-			if (!isJSONValue(result)) {
-				throw new Error(`${toolName} returned a non-JSON-serializable result.`);
-			}
-			return { outcome: 'success', content: result };
-		} catch (cause) {
-			return {
-				outcome: 'error',
-				content: null,
-				error: {
-					code: 'execution_failed',
-					category: 'internal',
-					retryable: false,
-					message: cause instanceof Error ? cause.message : 'Tool execution failed.'
-				}
-			};
-		}
+	// `$state.snapshot`'s return type recurses too deeply over
+	// ConversationHistory's shape for TS to resolve ("Type instantiation is
+	// excessively deep") — the runtime snapshot is exactly what these
+	// streaming builders need (a plain object, not a Svelte proxy — passing
+	// the proxy through breaks their internal structuredClone), so a single
+	// assertion bridges the typing gap.
+	function snapshot(): ConversationHistory {
+		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}
 
 	async function withStreamingIndicator(run: () => Promise<void>): Promise<void> {
@@ -205,22 +102,21 @@
 			return;
 		}
 
-		const history = toAnthropicHistory(conversation);
 		const { conversation: withPlaceholder, messageId } = appendStreamingMessage(
-			conversation,
+			snapshot(),
 			'assistant'
 		);
 		conversation = withPlaceholder;
 		chat?.beginStreaming(messageId);
 
-		const toolUses: ToolUseEvent[] = [];
 		let buffer = '';
+		let sawToolResult = false;
 
 		try {
 			const response = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ messages: history })
+				body: JSON.stringify({ conversation })
 			});
 
 			if (!response.ok || !response.body) {
@@ -245,58 +141,52 @@
 
 					if (event.type === 'text') {
 						buffer += event.text;
-						conversation = updateStreamingMessage(conversation, messageId, buffer);
+						conversation = updateStreamingMessage(snapshot(), messageId, buffer);
 						chat?.pushToken(event.text);
-					} else {
-						toolUses.push(event);
+						continue;
 					}
+
+					if (event.type === 'tool_call') {
+						if (!isJSONValue(event.arguments)) continue;
+						conversation = appendMessages(conversation, {
+							role: 'tool-call',
+							content: '',
+							toolCall: { id: event.id, name: event.name, arguments: event.arguments }
+						});
+						continue;
+					}
+
+					// tool_result
+					if (!isJSONValue(event.content)) continue;
+					sawToolResult = true;
+					if (event.pendingApproval) {
+						pendingApprovals.set(event.callId, event.pendingApproval);
+					}
+					conversation = appendMessages(conversation, {
+						role: 'tool-result',
+						content: '',
+						toolResult: {
+							callId: event.callId,
+							outcome: event.outcome,
+							content: event.content,
+							...(event.error ? { error: event.error } : {}),
+							...(event.action ? { action: event.action } : {})
+						}
+					});
 				}
 			}
 
 			conversation = buffer
-				? finalizeStreamingMessage(conversation, messageId)
-				: cancelStreamingMessage(conversation, messageId);
+				? finalizeStreamingMessage(snapshot(), messageId)
+				: cancelStreamingMessage(snapshot(), messageId);
 		} catch (cause) {
-			conversation = cancelStreamingMessage(conversation, messageId);
+			conversation = cancelStreamingMessage(snapshot(), messageId);
 			throw cause;
 		} finally {
 			chat?.endStreaming();
 		}
 
-		if (toolUses.length === 0) return;
-
-		for (const toolUse of toolUses) {
-			if (!isJSONValue(toolUse.input)) continue;
-
-			conversation = appendMessages(conversation, {
-				role: 'tool-call',
-				content: '',
-				toolCall: { id: toolUse.id, name: toolUse.name, arguments: toolUse.input }
-			});
-
-			const tool = getTool(toolUse.name);
-			if (tool?.requiresApproval) {
-				conversation = appendMessages(conversation, {
-					role: 'tool-result',
-					content: '',
-					toolResult: {
-						callId: toolUse.id,
-						outcome: 'action_required',
-						content: null,
-						action: { type: 'approval', message: tool.approvalMessage ?? `Approve ${tool.name}?` }
-					}
-				});
-				continue;
-			}
-
-			conversation = appendMessages(conversation, {
-				role: 'tool-result',
-				content: '',
-				toolResult: { callId: toolUse.id, ...buildToolResultInput(toolUse.name, toolUse.input) }
-			});
-		}
-
-		if (!hasUnresolvedApprovals(conversation)) {
+		if (sawToolResult && !hasUnresolvedApprovals(conversation)) {
 			await runTurn();
 		}
 	}
@@ -312,14 +202,24 @@
 		},
 		approveToolCall: async (toolCallId) => {
 			await withStreamingIndicator(async () => {
-				const callMessage = findToolCallMessage(conversation, toolCallId);
+				const approval = pendingApprovals.get(toolCallId);
 				const resultMessageId = findToolResultMessageId(conversation, toolCallId);
-				if (!callMessage?.toolCall || !resultMessageId) return;
+				if (!approval || !resultMessageId) return;
 
-				conversation = replaceToolResult(conversation, resultMessageId, {
-					callId: toolCallId,
-					...buildToolResultInput(callMessage.toolCall.name, callMessage.toolCall.arguments)
+				const response = await fetch('/api/chat/resume', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ approval, decision: 'approve' })
 				});
+
+				if (!response.ok) {
+					error = await response.text();
+					return;
+				}
+
+				const result = (await response.json()) as ToolResult;
+				pendingApprovals.delete(toolCallId);
+				conversation = replaceToolResult(conversation, resultMessageId, result);
 				await runTurn();
 			});
 		},
@@ -328,6 +228,7 @@
 				const resultMessageId = findToolResultMessageId(conversation, toolCallId);
 				if (!resultMessageId) return;
 
+				pendingApprovals.delete(toolCallId);
 				conversation = replaceToolResult(conversation, resultMessageId, {
 					callId: toolCallId,
 					outcome: 'error',

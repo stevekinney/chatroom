@@ -2,46 +2,19 @@ import { ANTHROPIC_API_KEY } from '$env/static/private';
 import { json } from '@sveltejs/kit';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { toAnthropicMessagesForSdk } from 'conversationalist/adapters/anthropic';
+import { conversationSchema } from 'conversationalist/schemas';
+import { parseAnthropicToolCalls, toAnthropicTools } from 'armorer/adapters/anthropic';
 
-import { toAnthropicTools } from '$lib/tools';
+import { toolbox } from '$lib/toolbox';
 
+import type { ContentBlock } from '@anthropic-ai/sdk/resources/messages';
 import type { RequestHandler } from './$types';
 
 const MODEL = 'claude-sonnet-5';
 const MAX_TOKENS = 4096;
 
-const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
-
-const toolUseBlockSchema = z.object({
-	type: z.literal('tool_use'),
-	id: z.string(),
-	name: z.string(),
-	input: z.unknown()
-});
-
-const toolResultBlockSchema = z.object({
-	type: z.literal('tool_result'),
-	tool_use_id: z.string(),
-	content: z.string(),
-	is_error: z.boolean().optional()
-});
-
-const requestSchema = z.object({
-	messages: z
-		.array(
-			z.union([
-				z.object({
-					role: z.literal('user'),
-					content: z.array(z.union([textBlockSchema, toolResultBlockSchema])).min(1)
-				}),
-				z.object({
-					role: z.literal('assistant'),
-					content: z.array(z.union([textBlockSchema, toolUseBlockSchema])).min(1)
-				})
-			])
-		)
-		.min(1)
-});
+const requestSchema = z.object({ conversation: conversationSchema });
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
@@ -60,11 +33,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Invalid request body' }, { status: 400 });
 	}
 
+	const { system, messages } = toAnthropicMessagesForSdk(parsed.data.conversation);
+
 	const anthropicStream = anthropic.messages.stream({
 		model: MODEL,
 		max_tokens: MAX_TOKENS,
-		messages: parsed.data.messages,
-		tools: toAnthropicTools()
+		...(system ? { system } : {}),
+		messages,
+		tools: toAnthropicTools(toolbox)
 	});
 
 	const encoder = new TextEncoder();
@@ -78,6 +54,8 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller) {
+			const blocks: ContentBlock[] = [];
+
 			function enqueueEvent(event: unknown) {
 				if (settled) return;
 				controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
@@ -85,14 +63,45 @@ export const POST: RequestHandler = async ({ request }) => {
 
 			anthropicStream.on('text', (text) => enqueueEvent({ type: 'text', text }));
 			anthropicStream.on('contentBlock', (block) => {
-				if (block.type === 'tool_use') {
-					enqueueEvent({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
-				}
+				blocks.push(block);
 			});
 			anthropicStream.on('end', () => {
-				if (settled) return;
-				settled = true;
-				controller.close();
+				void (async () => {
+					try {
+						const toolCalls = parseAnthropicToolCalls(blocks);
+
+						if (toolCalls.length > 0) {
+							for (const toolCall of toolCalls) {
+								enqueueEvent({ type: 'tool_call', ...toolCall });
+							}
+
+							const results = await toolbox.execute(toolCalls);
+
+							for (const result of results) {
+								enqueueEvent({
+									type: 'tool_result',
+									callId: result.callId,
+									outcome: result.outcome,
+									content: result.content,
+									...(result.error ? { error: result.error } : {}),
+									...(result.action ? { action: result.action } : {}),
+									...(result.pendingApproval ? { pendingApproval: result.pendingApproval } : {})
+								});
+							}
+						}
+					} catch (cause) {
+						if (!settled) {
+							settled = true;
+							controller.error(cause);
+						}
+						return;
+					}
+
+					if (!settled) {
+						settled = true;
+						controller.close();
+					}
+				})();
 			});
 			anthropicStream.on('error', (error) => {
 				if (settled) return;
