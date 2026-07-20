@@ -1,7 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-	import '@lostgradient/chat/composer-popover/styles';
-
 	import {
 		appendAssistantMessage,
 		appendUserMessage,
@@ -81,6 +78,10 @@
 		composerSnapshot = chat?.getComposerValue() ?? '';
 	}
 
+	// Chat exposes no composer write-back API (`setComposerValue` /
+	// `insertAtRange`), so committing a popover selection means reaching into
+	// the textarea via `getEditorElement()` and dispatching a synthetic
+	// `input` event. upstream: stevekinney/cinder#780
 	function handleSelect(selection: ChatComposerPopoverSelection<SlashCommand>): void {
 		const editor = chat?.getEditorElement();
 		if (!editor) return;

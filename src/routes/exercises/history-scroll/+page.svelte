@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		Chat,
 		DEFAULT_SCROLL_CONFIGURATION,
@@ -67,8 +65,8 @@
 	// `onloadhistory` docs say "the consumer prepends compatible messages into
 	// `conversation`". History pagination is therefore hand-rolled here by
 	// constructing `Message` objects directly and renumbering `position` to
-	// match the new `ids` order. See the `friction` note in this exercise's
-	// structured output.
+	// match the new `ids` order.
+	// upstream: stevekinney/agent-bureau#244
 	function prependMessages(
 		conversation: ConversationHistory,
 		inputs: ArchivedMessageInput[]
@@ -167,8 +165,9 @@
 	// `atBottom`/`unreadCount`/`newMessageIndicatorVisible` are documented as
 	// bindable on `Chat`, but the shipped type declarations don't mark them
 	// bindable (svelte-check rejects `bind:atBottom` etc. even though the
-	// component implements `$bindable()` internally) — see upstream friction
-	// notes. Chat fires these change events at the same sites it mutates the
+	// component implements `$bindable()` internally).
+	// upstream: stevekinney/cinder#786
+	// Chat fires these change events at the same sites it mutates the
 	// bindable props, so mirroring them into local state here reproduces the
 	// same two-way sync without `bind:`.
 	//

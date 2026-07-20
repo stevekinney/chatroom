@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test('shows starter prompts, streaming status, metadata fallback, and callback overrides', async ({
 	page
 }) => {
-	await page.goto('/exercises/assistant-metadata');
+	await gotoHydrated(page, '/exercises/assistant-metadata');
 
 	const log = page.getByRole('log', { name: 'Messages' });
 

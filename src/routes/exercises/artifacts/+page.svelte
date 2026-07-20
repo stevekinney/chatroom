@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		appendMessages,
 		ArtifactViewer,
@@ -59,7 +57,10 @@
 	 * tool-result" path is exercised via the tool-call's own row — Chat
 	 * folds paired tool-result rows into their tool-call's row, so the
 	 * artifact metadata has to live on the tool-call message to render a
-	 * clickable row at all.
+	 * clickable row at all (upstream: stevekinney/cinder#783). The
+	 * `metadata.artifact` key itself is invented here — no convention
+	 * connects the conversation model to the artifact components
+	 * (upstream: stevekinney/cinder#782).
 	 */
 	function buildConversation(): ConversationHistory {
 		let conversation = createConversation({ id: 'artifacts-demo' });

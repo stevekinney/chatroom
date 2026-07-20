@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		appendMessages,
 		appendStreamingMessage,
@@ -96,10 +94,13 @@
 	let overrides = $state<Record<string, MessageOverride>>({});
 	// Plain `let`: read only inside `handleSuggestionSelect`, never reactively.
 	// `Chat` does NOT clear a message's suggestion chips on its own when one is
-	// selected (see friction notes) — the consumer is expected to suppress them,
-	// which requires knowing which message they belonged to.
+	// selected — the consumer is expected to suppress them, which requires
+	// knowing which message they belonged to.
+	// upstream: stevekinney/cinder#779
 	let lastAssistantMessageId: string | undefined;
 
+	// Double cast: ConversationHistory blows TS's instantiation depth under
+	// `$state.snapshot`. upstream: stevekinney/agent-bureau#245
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

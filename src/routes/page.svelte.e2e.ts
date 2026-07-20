@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from './exercises/hydration';
 
 test('sends a message and streams the assistant reply into the conversation log', async ({
 	page
@@ -17,7 +18,7 @@ test('sends a message and streams the assistant reply into the conversation log'
 		});
 	});
 
-	await page.goto('/');
+	await gotoHydrated(page, '/');
 
 	const composer = page.getByRole('textbox', { name: 'Message' });
 	await expect(composer).toBeVisible();

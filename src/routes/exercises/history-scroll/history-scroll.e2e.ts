@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test('scroll state binds and jump-to-latest fires when new messages arrive while scrolled up', async ({
 	page
 }) => {
-	await page.goto('/exercises/history-scroll');
+	await gotoHydrated(page, '/exercises/history-scroll');
 
 	const atBottom = page.getByTestId('history-scroll-at-bottom');
 	const unreadCount = page.getByTestId('history-scroll-unread-count');
@@ -41,7 +42,7 @@ test('scroll state binds and jump-to-latest fires when new messages arrive while
 });
 
 test('bottomThreshold override widens the "at bottom" zone', async ({ page }) => {
-	await page.goto('/exercises/history-scroll');
+	await gotoHydrated(page, '/exercises/history-scroll');
 
 	const atBottom = page.getByTestId('history-scroll-at-bottom');
 
@@ -61,7 +62,7 @@ test('bottomThreshold override widens the "at bottom" zone', async ({ page }) =>
 test('jumpThreshold override suppresses the jump-to-latest button until reset', async ({
 	page
 }) => {
-	await page.goto('/exercises/history-scroll');
+	await gotoHydrated(page, '/exercises/history-scroll');
 
 	// A very high jumpThreshold means the scroll-to-top distance never crosses
 	// it, so the far-scrolled jump button doesn't render — but Chat still
@@ -91,7 +92,7 @@ test('jumpThreshold override suppresses the jump-to-latest button until reset', 
 test('history pagination via adapter.loadOlderMessages prepends pages and exhausts moreHistoryAvailable', async ({
 	page
 }) => {
-	await page.goto('/exercises/history-scroll');
+	await gotoHydrated(page, '/exercises/history-scroll');
 
 	const messageCount = page.getByTestId('history-scroll-message-count');
 	const pagesRemaining = page.getByTestId('history-scroll-pages-remaining');
@@ -138,7 +139,7 @@ test('history pagination via adapter.loadOlderMessages prepends pages and exhaus
 test('history pagination via onloadhistory callback (no adapter.loadOlderMessages)', async ({
 	page
 }) => {
-	await page.goto('/exercises/history-scroll');
+	await gotoHydrated(page, '/exercises/history-scroll');
 
 	await page.getByTestId('history-scroll-mode-callback').check();
 	await expect(page.getByTestId('history-scroll-message-count')).toHaveText('60');

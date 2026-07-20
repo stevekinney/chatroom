@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 // A valid, tiny (1x1 transparent) PNG so `deriveAttachmentKind` classifies it
 // as `'image'` and the composer accepts it under the default `image/*` rule.
@@ -11,7 +12,7 @@ const CHAT_CONTAINER = '#chatroom-attachments-chat';
 test('composer file attachment: add, preview, submit, and render via MessageAttachments', async ({
 	page
 }) => {
-	await page.goto('/exercises/attachments');
+	await gotoHydrated(page, '/exercises/attachments');
 
 	const filePicker = page.locator(FILE_PICKER);
 
@@ -62,7 +63,7 @@ test('composer file attachment: add, preview, submit, and render via MessageAtta
 test('composer file attachment: remove before submit fires onattachmentremove', async ({
 	page
 }) => {
-	await page.goto('/exercises/attachments');
+	await gotoHydrated(page, '/exercises/attachments');
 
 	// First interaction on the page — see the `toPass()` note in the test
 	// above for why the file set is retried idempotently.
@@ -87,7 +88,7 @@ test('composer file attachment: remove before submit fires onattachmentremove', 
 });
 
 test('composer file attachment: rejected file type fires onattachmentfailure', async ({ page }) => {
-	await page.goto('/exercises/attachments');
+	await gotoHydrated(page, '/exercises/attachments');
 
 	// video/* is not in ChatInput's default acceptedTypes list, so this is
 	// rejected deterministically before a ChatAttachment is ever built. First
@@ -112,7 +113,7 @@ test('composer file attachment: rejected file type fires onattachmentfailure', a
 });
 
 test('drag-and-drop onto the chat surface adds an attachment', async ({ page }) => {
-	await page.goto('/exercises/attachments');
+	await gotoHydrated(page, '/exercises/attachments');
 
 	async function dispatchDrop(): Promise<void> {
 		await page.evaluate(

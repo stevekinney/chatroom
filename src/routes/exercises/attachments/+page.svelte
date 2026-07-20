@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		appendAssistantMessage,
 		appendUserMessage,

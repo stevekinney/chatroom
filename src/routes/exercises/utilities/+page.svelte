@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		Chat,
 		ChatDateSeparator,
@@ -79,8 +77,9 @@
 
 	// `atBottom` is documented as bindable on `Chat`, but the shipped type
 	// declarations don't mark it bindable (svelte-check rejects `bind:atBottom`
-	// even though the component implements `$bindable()` internally) — see
-	// upstream friction notes. Chat fires `onscrollstatechange` at the same
+	// even though the component implements `$bindable()` internally).
+	// upstream: stevekinney/cinder#786
+	// Chat fires `onscrollstatechange` at the same
 	// site it mutates the bindable prop, so mirroring it into local state here
 	// reproduces the same two-way sync without `bind:`.
 	function handleScrollStateChange(event: ChatScrollStateChangeEvent): void {

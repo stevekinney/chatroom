@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test('opens, closes, and reopens an artifact from conversation activity', async ({ page }) => {
-	await page.goto('/exercises/artifacts');
+	await gotoHydrated(page, '/exercises/artifacts');
 
 	const log = page.getByRole('log', { name: 'Messages' });
 	const layout = page.locator('.chat-artifact-layout');

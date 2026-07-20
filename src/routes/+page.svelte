@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		Chat,
 		appendMessages,
@@ -83,6 +81,7 @@
 	// streaming builders need (a plain object, not a Svelte proxy — passing
 	// the proxy through breaks their internal structuredClone), so a single
 	// assertion bridges the typing gap.
+	// upstream: stevekinney/agent-bureau#245
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

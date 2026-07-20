@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
 
 test('utility functions render correctly against the seeded conversation', async ({ page }) => {
-	await page.goto('/exercises/utilities');
+	await gotoHydrated(page, '/exercises/utilities');
 
 	const rows = page.getByTestId('utilities-message-row');
 	await expect(rows).toHaveCount(24);
@@ -43,7 +44,7 @@ test('utility functions render correctly against the seeded conversation', async
 });
 
 test('ConversationExportActions copies the transcript and reports success', async ({ page }) => {
-	await page.goto('/exercises/utilities');
+	await gotoHydrated(page, '/exercises/utilities');
 
 	const status = page.getByTestId('utilities-export-status');
 	await expect(status).toHaveText('');
@@ -61,7 +62,7 @@ test('ConversationExportActions copies the transcript and reports success', asyn
 });
 
 test('imperative Chat methods: announce, scroll, focus, and composer access', async ({ page }) => {
-	await page.goto('/exercises/utilities');
+	await gotoHydrated(page, '/exercises/utilities');
 
 	const chatWrapper = page.getByTestId('utilities-full-chat-wrapper');
 	const composer = chatWrapper.getByRole('textbox', { name: 'Message' });
@@ -98,7 +99,7 @@ test('imperative Chat methods: announce, scroll, focus, and composer access', as
 test('standalone building blocks render and behave correctly without the Chat shell', async ({
 	page
 }) => {
-	await page.goto('/exercises/utilities');
+	await gotoHydrated(page, '/exercises/utilities');
 
 	// ChatDateSeparator with a custom formatter for a deterministic label.
 	await expect(page.getByRole('separator', { name: 'Messages from 2024-03-14' })).toBeVisible();

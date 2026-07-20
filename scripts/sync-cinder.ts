@@ -51,7 +51,11 @@ console.log('Running chatroom verification...\n');
 
 const checks: { name: string; run: () => Promise<{ exitCode: number }> }[] = [
 	{ name: 'lint', run: () => $`bun run lint`.nothrow() },
-	{ name: 'check', run: () => $`bun run check`.nothrow() }
+	{ name: 'check', run: () => $`bun run check`.nothrow() },
+	// A new release is exactly when `upstream:` workaround markers go stale —
+	// fail the sync until each closed-issue workaround is removed (or its issue
+	// reopened, if the problem still reproduces).
+	{ name: 'check:upstream', run: () => $`bun run check:upstream`.nothrow() }
 ];
 
 if (full) {

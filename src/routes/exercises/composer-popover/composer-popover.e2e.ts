@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test.describe('ChatComposerPopover slash-command menu', () => {
 	test('typing "/" opens the menu and Escape dismisses it', async ({ page }) => {
-		await page.goto('/exercises/composer-popover');
+		await gotoHydrated(page, '/exercises/composer-popover');
 
 		const composer = page.getByRole('combobox', { name: 'Message' });
 		const menu = page.getByRole('listbox', { name: 'Composer suggestions' });
@@ -26,7 +27,7 @@ test.describe('ChatComposerPopover slash-command menu', () => {
 	test('arrow keys navigate the menu without sending, Enter inserts the selection', async ({
 		page
 	}) => {
-		await page.goto('/exercises/composer-popover');
+		await gotoHydrated(page, '/exercises/composer-popover');
 
 		const composer = page.getByRole('combobox', { name: 'Message' });
 		const log = page.getByRole('log', { name: 'Messages' });
@@ -71,7 +72,7 @@ test.describe('ChatComposerPopover slash-command menu', () => {
 	});
 
 	test('fuzzy filtering narrows the menu via filterFuzzySubsequence', async ({ page }) => {
-		await page.goto('/exercises/composer-popover');
+		await gotoHydrated(page, '/exercises/composer-popover');
 
 		const composer = page.getByRole('combobox', { name: 'Message' });
 		const menu = page.getByRole('listbox', { name: 'Composer suggestions' });
@@ -86,7 +87,7 @@ test.describe('ChatComposerPopover slash-command menu', () => {
 	});
 
 	test('empty query shows no matches for an unmatched subsequence', async ({ page }) => {
-		await page.goto('/exercises/composer-popover');
+		await gotoHydrated(page, '/exercises/composer-popover');
 
 		const composer = page.getByRole('combobox', { name: 'Message' });
 		const menu = page.getByRole('listbox', { name: 'Composer suggestions' });
@@ -108,7 +109,7 @@ test.describe('ChatComposerPopover slash-command menu', () => {
 	});
 
 	test('clearInput and getComposerValue drive the draft preview imperatively', async ({ page }) => {
-		await page.goto('/exercises/composer-popover');
+		await gotoHydrated(page, '/exercises/composer-popover');
 
 		const composer = page.getByRole('combobox', { name: 'Message' });
 		const preview = page.getByTestId('draft-preview');

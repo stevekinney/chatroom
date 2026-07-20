@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test('switching conversations swaps the header and the rendered transcript', async ({ page }) => {
-	await page.goto('/exercises/conversation-list');
+	await gotoHydrated(page, '/exercises/conversation-list');
 
 	// Launch support is seeded as the initial active conversation.
 	await expect(page.getByRole('heading', { name: 'Launch support' })).toBeVisible();

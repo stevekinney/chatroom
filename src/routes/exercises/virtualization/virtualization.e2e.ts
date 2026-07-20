@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 import type { Page } from '@playwright/test';
 
 // Chat renders SSR without virtualization (`isVirtualized` is gated on a
@@ -14,7 +15,7 @@ async function waitForVirtualizedTimeline(page: Page) {
 }
 
 test('virtualized transcript keeps DOM row count far below the message count', async ({ page }) => {
-	await page.goto('/exercises/virtualization');
+	await gotoHydrated(page, '/exercises/virtualization');
 	await waitForVirtualizedTimeline(page);
 
 	await expect(page.getByTestId('virtualization-message-count')).toHaveText('500');
@@ -29,7 +30,7 @@ test('virtualized transcript keeps DOM row count far below the message count', a
 test('scrollToBottom reaches the last message; scrollToTop is fought back to the bottom (upstream bug)', async ({
 	page
 }) => {
-	await page.goto('/exercises/virtualization');
+	await gotoHydrated(page, '/exercises/virtualization');
 	await waitForVirtualizedTimeline(page);
 
 	// Chat starts pinned to the bottom; the last seeded message is reachable
@@ -57,7 +58,7 @@ test('scrollToBottom reaches the last message; scrollToTop is fought back to the
 test('tuning virtualizationOverscan changes the rendered row count but stays well below the message count', async ({
 	page
 }) => {
-	await page.goto('/exercises/virtualization');
+	await gotoHydrated(page, '/exercises/virtualization');
 	await waitForVirtualizedTimeline(page);
 
 	const baselineRowCount = await page.locator('.chat-message').count();
@@ -74,7 +75,7 @@ test('tuning virtualizationOverscan changes the rendered row count but stays wel
 test('streaming a new message into a virtualized transcript renders and finalizes it', async ({
 	page
 }) => {
-	await page.goto('/exercises/virtualization');
+	await gotoHydrated(page, '/exercises/virtualization');
 	await waitForVirtualizedTimeline(page);
 
 	await expect(page.getByTestId('virtualization-message-count')).toHaveText('500');

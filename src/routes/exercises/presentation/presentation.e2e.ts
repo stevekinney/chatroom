@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 // Exercises the presentation props (density/variant/surfaceMode, all reflected
 // as `data-*` attributes on `.chat-container`) and the ChatCapabilities editor
@@ -10,7 +11,7 @@ const CHAT = '#presentation-chat';
 
 test.describe('presentation: density, variant, surfaceMode', () => {
 	test('toggling controls updates the data attributes Chat reads for styling', async ({ page }) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		await expect(chat).toHaveAttribute('data-cinder-density', 'comfortable');
@@ -38,7 +39,7 @@ test.describe('presentation: density, variant, surfaceMode', () => {
 
 test.describe('presentation: ChatCapabilities', () => {
 	test('attachments: OFF hides the attach button, ON restores it', async ({ page }) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		await expect(chat.getByRole('button', { name: 'Attach file', exact: true })).toBeVisible();
@@ -51,7 +52,7 @@ test.describe('presentation: ChatCapabilities', () => {
 	});
 
 	test('copy: OFF removes per-message copy buttons, ON restores them', async ({ page }) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		await expect(chat.getByRole('button', { name: 'Copy message' }).first()).toBeVisible();
@@ -66,7 +67,7 @@ test.describe('presentation: ChatCapabilities', () => {
 	test('editing: OFF removes the edit affordance on the user message, ON restores it', async ({
 		page
 	}) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		await expect(chat.getByRole('button', { name: 'Edit message' })).toBeVisible();
@@ -81,7 +82,7 @@ test.describe('presentation: ChatCapabilities', () => {
 	test('retry: OFF removes the retry button on the seeded failed message, ON restores it', async ({
 		page
 	}) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		await expect(chat.getByText('Failed to send', { exact: true })).toBeVisible();
@@ -107,7 +108,7 @@ test.describe('presentation: ChatCapabilities', () => {
 	test('search: OFF suppresses Cmd/Ctrl+F, ON opens the search bar with working highlight and navigation', async ({
 		page
 	}) => {
-		await page.goto('/exercises/presentation');
+		await gotoHydrated(page, '/exercises/presentation');
 
 		const chat = page.locator(CHAT);
 		const composer = chat.getByRole('textbox', { name: 'Message' });

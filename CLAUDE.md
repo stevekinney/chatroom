@@ -43,33 +43,25 @@ bun run lint && bun run check
 
 ## Using the Chat component
 
-Two required steps, both easy to get wrong silently — see the two upstream issues below before
-assuming either is optional:
+One required step, easy to get wrong silently: **base styles load once, at the app entry**
+(`src/routes/+layout.svelte`), before any component module:
 
-1. **Base styles load once, at the app entry** (`src/routes/+layout.svelte`), before any
-   component styles:
+```ts
+import '@lostgradient/cinder/styles';
+import '@lostgradient/cinder/styles/guard'; // dev-only: warns if the base didn't load first
+```
 
-   ```ts
-   import '@lostgradient/cinder/styles';
-   import '@lostgradient/cinder/styles/guard'; // dev-only: warns if the base didn't load first
-   ```
+`styles/guard` checks for a `--cinder-base-loaded` custom property on `:root` in dev and
+warns if it's missing — it's a no-op in production. Getting the order wrong (component CSS
+before base CSS) creates the cascade `@layer`s in the wrong order and produces no error, just
+quietly-wrong styling.
 
-   `styles/guard` checks for a `--cinder-base-loaded` custom property on `:root` in dev and
-   warns if it's missing — it's a no-op in production. Getting the order wrong (component CSS
-   before base CSS) creates the cascade `@layer`s in the wrong order and produces no error, just
-   quietly-wrong styling.
-
-2. **Each component's styles are imported alongside the component**, currently required per
-   component:
-
-   ```ts
-   import { Chat } from '@lostgradient/chat';
-   import '@lostgradient/chat/styles';
-   ```
-
-   Compound components (Chat's own conversation-header, conversation-list, composer-popover,
-   etc.) ship their styles from the parent subpath, so importing `@lostgradient/chat/styles`
-   covers those too.
+Component styles ship with the components themselves: as of `@lostgradient/chat@0.1.1`, each
+component's own module imports its CSS (preserved by the package's `sideEffects`), so
+`import { Chat } from '@lostgradient/chat'` — or any compound subpath like
+`@lostgradient/chat/conversation-list` — brings its styles along. Do **not** add explicit
+`@lostgradient/chat/styles` imports; that was the cinder#754 workaround, removed once the fix
+shipped.
 
 Conversation data flows through **`conversationalist`**, which Chat re-exports type-wise but
 which we currently must also install directly (`conversationalist`, `zod`) per Cinder's own
@@ -102,17 +94,18 @@ completion before rendering.
 
 ## Known upstream friction
 
-Two Cinder architecture complaints have standing GitHub issues — don't re-litigate or re-file
-these, check status instead:
+These complaints have standing GitHub issues — don't re-litigate or re-file them, check status
+instead:
 
-- [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) — Chat currently
-  requires host apps to separately install `conversationalist` and `zod`, which is a
-  peer-dependency-in-disguise. The ask is for Cinder to fully own that dependency and re-export
-  what's needed.
-- [stevekinney/cinder#754](https://github.com/stevekinney/cinder/issues/754) — components
-  require a separate, order-sensitive `@lostgradient/cinder/<component>/styles` import per
-  component, which silently misbehaves if forgotten or misordered. The ask is for components to
-  bring their own CSS automatically.
+- [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) (open; reopened
+  July 2026 after a premature close) — Chat requires host apps to separately install
+  `conversationalist` and `zod`, a peer-dependency-in-disguise. The ask is for Cinder to fully
+  own that dependency and re-export what's needed (including helpers like `isJSONValue`).
+- [stevekinney/cinder#754](https://github.com/stevekinney/cinder/issues/754) — **fixed and
+  verified** in `@lostgradient/chat@0.1.1`: components self-import their CSS. Listed here only
+  so it doesn't get re-filed; the explicit `/styles` imports it used to require are gone.
+- The `/exercises` routes (one per Chat surface area) exist to smoke out this kind of friction;
+  building them filed cinder#778–786 and agent-bureau#244–245.
 
 ## Filing and resolving upstream issues
 
@@ -136,9 +129,21 @@ agent-bureau loop is the same shape, just without a `sync:*` script yet — sync
    not reach here.
 4. **Sync**, from `chatroom` — run `bun run sync:cinder` (or invoke the `sync-cinder` skill).
    It bumps both `@lostgradient/*` packages to their latest published versions
-   (`bun update … --latest`) and re-runs `lint` + `check` here (pass `--full` to also run
-   `test:e2e`). It stops — rather than reporting success — if anything fails after the bump,
-   since a red check right after a sync means a new release broke something here.
+   (`bun update … --latest`) and re-runs `lint` + `check` + `check:upstream` here (pass
+   `--full` to also run `test:e2e`). It stops — rather than reporting success — if anything
+   fails after the bump, since a red check right after a sync means a new release broke
+   something here.
+5. **Clean up**, in the same session the sync happens. `check:upstream` failing means a
+   workaround's referenced issue has closed: remove the workaround (marker comment, extra
+   import, cast, whatever it guarded), re-verify, and commit the cleanup — or, if the problem
+   still reproduces despite the closed issue, reopen the issue instead and leave the marker in
+   place. Never leave a stale workaround with a closed-issue marker in the tree.
+
+**Every local workaround carries an `upstream:` marker.** When a workaround genuinely can't be
+avoided while waiting on a fix, tag it where it lives with a code comment of the form
+`upstream: <owner>/<repo>#<issue>` (e.g. `upstream: stevekinney/cinder#786`). That marker is
+what `bun run check:upstream` scans for — an untagged workaround is invisible to the cleanup
+loop and will outlive its fix.
 
 **Verify state after filing or commenting — don't assume a comment means "tracked."** A GitHub
 issue can be closed by something else (a bulk sweep tied to an unrelated release, another

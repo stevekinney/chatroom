@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 
 test('adapter push seam: streamed reply, pushed message, typing indicator, and read receipts', async ({
 	page
 }) => {
-	await page.goto('/exercises/adapter-push');
+	await gotoHydrated(page, '/exercises/adapter-push');
 
 	const log = page.getByRole('log', { name: 'Messages' });
 

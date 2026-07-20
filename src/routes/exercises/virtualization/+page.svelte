@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		Chat,
 		appendMessages,
@@ -50,6 +48,7 @@
 	// excessively deep") — the runtime snapshot is exactly what these
 	// streaming builders need (a plain object, not a Svelte proxy), so a
 	// single assertion bridges the typing gap. Mirrors src/routes/+page.svelte.
+	// upstream: stevekinney/agent-bureau#245
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

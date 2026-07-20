@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { gotoHydrated } from '../hydration';
 import type { Locator, Page } from '@playwright/test';
 
 // Exercises retry / edit / stop-generating across two Chat instances on the
@@ -73,7 +74,7 @@ test.describe('message lifecycle: retry, edit, and stop-generating', () => {
 
 	test.beforeAll(async ({ browser }) => {
 		page = await browser.newPage();
-		await page.goto('/exercises/message-lifecycle');
+		await gotoHydrated(page, '/exercises/message-lifecycle');
 	});
 
 	test.afterAll(async () => {

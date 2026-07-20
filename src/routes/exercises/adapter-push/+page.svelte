@@ -1,6 +1,4 @@
 <script lang="ts">
-	import '@lostgradient/chat/styles';
-
 	import {
 		appendMessages,
 		appendStreamingMessage,
@@ -64,6 +62,8 @@
 	// from button click handlers below — never read reactively.
 	let pushHandlers: ChatPushHandlers | undefined;
 
+	// Double cast: ConversationHistory blows TS's instantiation depth under
+	// `$state.snapshot`. upstream: stevekinney/agent-bureau#245
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}
