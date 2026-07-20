@@ -1,0 +1,79 @@
+import { expect, test } from '@playwright/test';
+
+test('shows starter prompts, streaming status, metadata fallback, and callback overrides', async ({
+	page
+}) => {
+	await page.goto('/exercises/assistant-metadata');
+
+	const log = page.getByRole('log', { name: 'Messages' });
+
+	// Empty state: starter prompt buttons are shown before any message exists.
+	const starterPrompt = page.getByRole('button', { name: 'Explain quantum entanglement' });
+	await expect(starterPrompt).toBeVisible();
+	await expect(page.getByRole('button', { name: 'What is superposition?' })).toBeVisible();
+
+	// Clicking a starter prompt submits it as a user message. Retried via
+	// `toPass()`: this is the page's first interaction, and under heavy
+	// parallel test load SvelteKit's hydration can still be attaching event
+	// listeners when the click fires, so the click is silently lost rather
+	// than slow — a plain `.click()` doesn't catch that, since Playwright's
+	// actionability checks don't confirm a listener is attached. The click is
+	// gated on the message not already being present so a retry can't
+	// double-submit. Scoped to `.chat-message` (not `log.getByText`, which
+	// also matches the starter-prompt button itself since it renders inside
+	// the `log` region).
+	const firstUserMessage = log.locator('.chat-message', {
+		hasText: 'Explain quantum entanglement'
+	});
+	await expect(async () => {
+		if ((await firstUserMessage.count()) === 0) await starterPrompt.click();
+		await expect(firstUserMessage).toBeVisible({ timeout: 1000 });
+	}).toPass();
+
+	// While streaming has started but no content has arrived yet, the
+	// "Thinking…" streamingStatus label is shown.
+	await expect(page.getByRole('status', { name: 'Thinking…' })).toBeVisible();
+
+	// First assistant reply completes, sourced from message.metadata['cinder:*']
+	// fallbacks (no messageReasoning/messageSteps/messageSuggestions override).
+	await expect(
+		log.getByText('Quantum entanglement is a phenomenon where two particles')
+	).toBeVisible();
+
+	const reasoningToggle = page.getByRole('button', { name: /reasoning/i }).first();
+	await expect(reasoningToggle).toBeVisible();
+	await reasoningToggle.click();
+	await expect(log.getByText('Recall the EPR paradox and Bell inequality')).toBeVisible();
+
+	await expect(log.getByText('Recall physics')).toBeVisible();
+	await expect(log.getByText('EPR paradox and Bell inequality basics.')).toBeVisible();
+
+	const fallbackSuggestion = page.getByRole('button', { name: 'Explain superposition' });
+	await expect(fallbackSuggestion).toBeVisible();
+	await expect(page.getByRole('button', { name: "What is Bell's theorem?" })).toBeVisible();
+
+	// Selecting a suggestion chip submits it as a new user message, which
+	// advances to the second scripted turn (the messageReasoning/messageSteps/
+	// messageSuggestions callback override path, with no metadata set on the
+	// message at all).
+	await fallbackSuggestion.click();
+	await expect(log.getByText('Explain superposition', { exact: true })).toBeVisible();
+
+	await expect(page.getByRole('status', { name: 'Thinking…' })).toBeVisible();
+
+	await expect(
+		log.getByText('Superposition is the idea that a quantum system can exist')
+	).toBeVisible();
+
+	const overrideReasoningToggle = page.getByRole('button', { name: /reasoning/i }).nth(1);
+	await expect(overrideReasoningToggle).toBeVisible();
+	await overrideReasoningToggle.click();
+	await expect(
+		log.getByText('Override reasoning: contrast superposition with entanglement')
+	).toBeVisible();
+
+	await expect(log.getByText('Contrast concepts')).toBeVisible();
+	await expect(log.getByText('Compare entanglement with superposition.')).toBeVisible();
+
+	await expect(page.getByRole('button', { name: 'Explain wave-particle duality' })).toBeVisible();
+});

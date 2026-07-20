@@ -14,6 +14,7 @@
 		type ConversationHistory,
 		type ToolResult
 	} from '@lostgradient/chat';
+	import { resolve } from '$app/paths';
 	import { isJSONValue } from 'conversationalist';
 	import { SvelteMap } from 'svelte/reactivity';
 
@@ -251,6 +252,7 @@
 </script>
 
 <div style="height: 100dvh; display: flex; flex-direction: column;">
+	<a href={resolve('/exercises')} style="padding: 0.5rem 1rem;">Exercises</a>
 	{#if error}
 		<p role="alert" style="padding: 0.5rem 1rem; margin: 0; color: var(--cinder-danger);">
 			{error}
