@@ -16,22 +16,5 @@ export default defineConfig({
 			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
 			adapter: adapter()
 		})
-	],
-
-	// Both @lostgradient/chat and its @lostgradient/cinder peer are consumed via
-	// `bun link` against live source in ../cinder. Left externalized, SSR would
-	// resolve them through their `node` export condition into each package's
-	// prebuilt dist/server bundle — defeating the live-source purpose and, worse,
-	// pulling in server artifacts that aren't built in a plain source checkout.
-	// noExternal alone isn't enough: export-map precedence is key order, and both
-	// packages list `node` before `svelte`, so `node` wins into dist/server as long
-	// as it's an active SSR condition. Dropping `node` (and never adding `browser`)
-	// lets the `svelte` source condition win for SSR too. `@anthropic-ai/sdk` in the
-	// API route keeps working via its `import` build.
-	ssr: {
-		noExternal: ['@lostgradient/chat', '@lostgradient/cinder'],
-		resolve: {
-			conditions: ['svelte', 'module', 'import', 'default']
-		}
-	}
+	]
 });

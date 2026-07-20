@@ -7,57 +7,39 @@
 ## Purpose
 
 This project exists to kick the tires on the `Chat` component from `@lostgradient/chat`
-(linked from `../cinder/packages/chat`) and drive it with the Anthropic SDK, working toward a
-best-in-class chat experience. It is a testbed, not a product — expect the demo route and
-conversation wiring to change often as we try things against the real component.
+(installed from npm) and drive it with the Anthropic SDK, working toward a best-in-class chat
+experience. It is a testbed, not a product — expect the demo route and conversation wiring to
+change often as we try things against the real component.
 
 As of Cinder 0.16, `Chat` lives in its own package, `@lostgradient/chat`, which peer-depends on
 `@lostgradient/cinder` (the design primitives), `conversationalist`, `zod`, and `svelte`.
-`@lostgradient/cinder` is still linked and still supplies the base styles; it's just no longer
-where `Chat` itself comes from.
+chatroom installs both `@lostgradient/*` packages from npm and provides those peers;
+`@lostgradient/cinder` still supplies the base styles, it's just no longer where `Chat` itself
+comes from.
 
 ## Working across `chatroom` and `../cinder`
 
-We routinely work in both repos in the same session — editing a Cinder component and its
-consumer in `chatroom` side by side, or checking out a Cinder worktree to test an in-progress
-change here. `.claude/settings.local.json` already grants access to `../cinder` as an additional
-directory.
+We routinely work in both repos in the same session — `../cinder` is where Cinder/Chat fixes get
+made (the `ralph-pipeline` skill drives that), and `chatroom` is where we exercise the result.
+`.claude/settings.local.json` already grants access to `../cinder` as an additional directory.
 
-**The links are `bun link`s, not registry dependencies.** Neither `@lostgradient/cinder` nor
-`@lostgradient/chat` appears in `package.json` — both resolve via Bun's global link registry.
-Link them in a **single** `bun link` call: linking one at a time flips the previously-linked
-package back to its registry version (a real Bun quirk).
+**chatroom consumes the _published_ npm packages, not a `bun link`.** `@lostgradient/chat` and
+`@lostgradient/cinder` are ordinary `dependencies` in `package.json`, pinned to their published
+versions; `conversationalist` and `zod` sit alongside them as the peers Chat requires. This is
+deliberate: consuming the real published tarballs — a complete `dist` + `dist/server`, the same
+artifacts any downstream app gets — is the point. A live-source `bun link` silently _masks_
+packaging and SSR/hydration edge cases (it was hiding the cinder#756 hydration mismatch, which
+only surfaced once we switched to the published packages). No `bun link`, no per-package CSS
+build, and no `vite.config.ts` SSR-condition workaround: published packages ship complete
+`dist`/`dist/server`, so the default export conditions resolve cleanly for both client and SSR.
+
+To move to a newer Cinder/Chat release after it publishes, bump both and re-verify — either
+directly or via `bun run sync:cinder` (see [the resolve loop below](#filing-and-resolving-upstream-issues)):
 
 ```bash
-# One-time setup, or after checking out a different cinder worktree:
-cd ../cinder/packages/components && bun link
-cd ../chat && bun link
-cd ../../../chatroom && bun link @lostgradient/cinder @lostgradient/chat
+bun update @lostgradient/cinder @lostgradient/chat --latest
+bun run lint && bun run check
 ```
-
-Re-running `bun link @lostgradient/<pkg>` here re-points the symlink at whatever `bun link` was
-last run from inside that package — so to test against a worktree, re-run `bun link` from that
-worktree's `packages/<pkg>` and re-link both here in one call. A plain `bun install` does not
-remove these links. After any re-link, confirm both survived: `test -d
-node_modules/@lostgradient/cinder/src && test -d node_modules/@lostgradient/chat/src`.
-
-**Live source, but with two setup requirements the old single-package layout didn't have:**
-
-- **Build `@lostgradient/chat`'s CSS once** — `bun run --filter=@lostgradient/chat build` from
-  `../cinder`. The `.` entry resolves to source (its `svelte` export condition points at
-  `src/lib/index.ts`), so component edits are picked up live with no watch. But
-  `@lostgradient/chat/styles` has **only** a `dist` condition
-  (`dist/components/chat/chat.css`), so the CSS won't resolve until that dist exists. The build
-  does not rewrite `package.json` (the export-map rewrite to `dist` happens at publish time, in
-  `pack-for-publish.ts`), so the `.` entry stays pointed at source afterward.
-- **`vite.config.ts` pins SSR to the source condition** — see the `ssr` block there. Both
-  packages list `node` before `svelte` in their export maps, so left externalized, SSR resolves
-  them into each package's prebuilt `dist/server` bundle (which also pulls in Cinder server
-  artifacts that a plain source checkout hasn't built, e.g. `@lostgradient/cinder/icons`).
-  `ssr.noExternal` plus `ssr.resolve.conditions` without `node` makes the `svelte` source
-  condition win, so SSR and client hydrate from the _same_ source. Verified: `bun run dev` SSRs
-  and hydrates `<Chat>` from live source with a clean console (no hydration mismatch), and the
-  `/api/chat` Anthropic stream still resolves `@anthropic-ai/sdk` fine under those conditions.
 
 ## Using the Chat component
 
@@ -149,12 +131,14 @@ agent-bureau loop is the same shape, just without a `sync:*` script yet — sync
 2. **Fix and merge**, driven from inside `../cinder` (not here) — the `ralph-pipeline` skill runs
    the worktree → work agent → PR → CI/review-stabilization → merge loop against a task file
    derived from the open issues.
-3. **Sync**, from `chatroom` — run `bun run sync:cinder` (or invoke the `sync-cinder` skill).
-   It pulls `../cinder`'s `main` with `--ff-only`, re-establishes the `bun link`, and re-runs
-   `lint` + `check` here (pass `--full` to also run `test:e2e`). It refuses to touch `../cinder`
-   if that checkout has uncommitted changes or isn't on `main`, and it stops — rather than
-   reporting success — if anything fails after the pull, since a red check right after a sync
-   means a new cinder commit broke something here.
+3. **Publish** the fix (`@lostgradient/cinder` and/or `@lostgradient/chat`) to npm — chatroom
+   consumes the registry, not `../cinder`'s working tree, so a merged-but-unpublished fix does
+   not reach here.
+4. **Sync**, from `chatroom` — run `bun run sync:cinder` (or invoke the `sync-cinder` skill).
+   It bumps both `@lostgradient/*` packages to their latest published versions
+   (`bun update … --latest`) and re-runs `lint` + `check` here (pass `--full` to also run
+   `test:e2e`). It stops — rather than reporting success — if anything fails after the bump,
+   since a red check right after a sync means a new release broke something here.
 
 **Verify state after filing or commenting — don't assume a comment means "tracked."** A GitHub
 issue can be closed by something else (a bulk sweep tied to an unrelated release, another
@@ -169,7 +153,8 @@ an unresolved bug, no matter what the last comment on it says.
 
 ```bash
 # chatroom
-bun run dev              # dev server (also picks up live cinder source changes)
+bun run dev              # dev server
+bun run sync:cinder      # bump @lostgradient/cinder + @lostgradient/chat to latest, re-verify
 bun run check             # svelte-kit sync + svelte-check
 bun run lint              # prettier --check + eslint
 bun run format             # prettier --write
