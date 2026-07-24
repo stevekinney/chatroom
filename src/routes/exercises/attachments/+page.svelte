@@ -13,6 +13,7 @@
 		type ConversationHistory,
 		type ImageContent,
 		type MultiModalContent,
+		type SerializedChatAttachment,
 		type TextContent
 	} from '@lostgradient/chat';
 
@@ -33,6 +34,10 @@
 	);
 	let events = $state<AttachmentEvent[]>([]);
 	let eventSeq = 0;
+	// Exercise 3: the exact `SerializedChatAttachment[]` produced by the most
+	// recent `serializeChatAttachments` call, rendered as JSON so the e2e test
+	// can assert its shape structurally rather than just "something exists".
+	let lastSerializedAttachments = $state<SerializedChatAttachment[]>([]);
 
 	// Every image part across the transcript, gathered for the standalone
 	// `MessageAttachments` gallery below. Chat already renders images inline in
@@ -104,6 +109,7 @@
 		} else {
 			const textValue = typeof message.content === 'string' ? message.content : '';
 			const serialized = await serializeChatAttachments(attachments);
+			lastSerializedAttachments = serialized;
 			const textPart: TextContent = { type: 'text', text: textValue };
 			const imageParts: ImageContent[] = serialized
 				.filter((attachment) => attachment.kind === 'image')
@@ -160,5 +166,10 @@
 		<div data-testid="attachment-gallery">
 			<MessageAttachments images={allImages} />
 		</div>
+
+		<h2>serializeChatAttachments output</h2>
+		<pre data-testid="attachment-serialized-json" style="white-space: pre-wrap;">{JSON.stringify(
+				lastSerializedAttachments
+			)}</pre>
 	</aside>
 </div>

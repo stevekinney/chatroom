@@ -16,6 +16,8 @@
 		type TypingParticipant
 	} from '@lostgradient/chat';
 	import { SvelteMap } from 'svelte/reactivity';
+	import SubscribeInEffectHazardFixture from './subscribe-in-effect-hazard-fixture.svelte';
+	import SubscriptionLifecycleFixture from './subscription-lifecycle-fixture.svelte';
 
 	/**
 	 * Everything below is driven ENTIRELY through `ChatAdapter.subscribe`'s push
@@ -216,6 +218,61 @@
 			directReadReceipts.set(messageId, { status: 'read', readBy: [DIRECT_READ_RECEIPT_READER] });
 		}
 	}
+
+	/**
+	 * A second, distinctly-named `onReadReceipt` push, used to prove the
+	 * ownership-transition contract: adapter pushes accumulate into Chat's
+	 * internal read-receipt state EVEN while a defined `readReceipts` prop is
+	 * suppressing their display, and flipping the prop back to `undefined`
+	 * reveals that accumulated state immediately — with no further push.
+	 */
+	const SECONDARY_READ_RECEIPT_READER = 'Jordan';
+
+	function pushSecondaryReadReceipt(): void {
+		const messageId = findLastUserMessageId();
+		if (!pushHandlers || !messageId) return;
+		pushHandlers.onReadReceipt({
+			messageId,
+			readAt: new Date().toISOString(),
+			readBy: [SECONDARY_READ_RECEIPT_READER]
+		});
+	}
+
+	// ==========================================================================
+	// Out-of-order stream pushes
+	// ==========================================================================
+	// These call the MAIN adapter's push handlers directly, deliberately out of
+	// the documented onStreamBegin -> onTokenPush* -> onStreamEnd order. None of
+	// them ever add a message to `conversation`, so if Chat handles the
+	// malformed sequence gracefully there is no row for a "ghost" streaming
+	// bubble to attach to — any unexpected DOM addition here would indicate
+	// state corruption, not a scripted demo message.
+
+	const OUT_OF_ORDER_MESSAGE_ID = 'adapter-push-ooo-fixture';
+
+	function pushTokenBeforeBegin(): void {
+		pushHandlers?.onTokenPush('orphan-token ');
+		log('onTokenPush fired before onStreamBegin (no active stream)');
+	}
+
+	function pushDoubleStreamBegin(): void {
+		if (!pushHandlers) return;
+		pushHandlers.onStreamBegin(OUT_OF_ORDER_MESSAGE_ID);
+		pushHandlers.onStreamBegin(OUT_OF_ORDER_MESSAGE_ID);
+		log('onStreamBegin fired twice in a row');
+		pushHandlers.onStreamEnd();
+	}
+
+	function pushStreamEndTwice(): void {
+		pushHandlers?.onStreamEnd();
+		pushHandlers?.onStreamEnd();
+		log('onStreamEnd fired twice in a row');
+	}
+
+	function pushStreamEndWithoutBegin(): void {
+		pushHandlers?.onStreamEnd();
+		log('onStreamEnd fired with no prior onStreamBegin');
+	}
 </script>
 
 <div style="height: 100dvh; display: flex; flex-direction: column;">
@@ -224,7 +281,11 @@
 			{error}
 		</p>
 	{/if}
-	<div style="flex: 1; min-height: 0;">
+	<!-- Generous min-height: the typing indicator flex-collapses to zero
+	     height whenever the transcript overflows its viewport, so this keeps
+	     the short seeded transcript from overflowing while that's unfixed.
+	     upstream: stevekinney/cinder#910 -->
+	<div style="flex: 1; min-height: 32rem;">
 		<Chat
 			id="adapter-push-chat"
 			{conversation}
@@ -264,6 +325,13 @@
 			>
 				{directReadReceiptEnabled ? 'Disable' : 'Enable'} direct readReceipts prop
 			</button>
+			<button
+				type="button"
+				data-testid="push-read-receipt-secondary"
+				onclick={pushSecondaryReadReceipt}
+			>
+				Push read receipt (Jordan)
+			</button>
 		</div>
 		<ul data-testid="event-log" style="margin: 0; padding-left: 1.25rem; font-size: 0.75rem;">
 			{#each eventLog as entry, index (index)}
@@ -271,4 +339,29 @@
 			{/each}
 		</ul>
 	</div>
+
+	<div
+		style="padding: 0.75rem 1rem; border-top: 1px solid var(--cinder-border); display: flex; flex-wrap: wrap; gap: 0.5rem;"
+	>
+		<button type="button" data-testid="push-token-before-begin" onclick={pushTokenBeforeBegin}>
+			onTokenPush before onStreamBegin
+		</button>
+		<button type="button" data-testid="push-double-stream-begin" onclick={pushDoubleStreamBegin}>
+			Double onStreamBegin
+		</button>
+		<button type="button" data-testid="push-stream-end-twice" onclick={pushStreamEndTwice}>
+			onStreamEnd twice
+		</button>
+		<button
+			type="button"
+			data-testid="push-stream-end-without-begin"
+			onclick={pushStreamEndWithoutBegin}
+		>
+			onStreamEnd without onStreamBegin
+		</button>
+	</div>
+
+	<SubscriptionLifecycleFixture />
+
+	<SubscribeInEffectHazardFixture />
 </div>

@@ -78,3 +78,76 @@ test('shows starter prompts, streaming status, metadata fallback, and callback o
 
 	await expect(page.getByRole('button', { name: 'Explain wave-particle duality' })).toBeVisible();
 });
+
+test('metadata/callback precedence on the same message: fallback, suppression, override', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/exercises/assistant-metadata');
+
+	const log = page.getByRole('log', { name: 'Messages' });
+	const starterPrompt = page.getByRole('button', { name: 'Explain quantum entanglement' });
+
+	// First interaction on the page — see the note on the `toPass()` pattern
+	// in the test above.
+	const firstUserMessage = log.locator('.chat-message', {
+		hasText: 'Explain quantum entanglement'
+	});
+	await expect(async () => {
+		if ((await firstUserMessage.count()) === 0) await starterPrompt.click();
+		await expect(firstUserMessage).toBeVisible({ timeout: 1000 });
+	}).toPass();
+
+	await expect(
+		log.getByText('Quantum entanglement is a phenomenon where two particles')
+	).toBeVisible();
+
+	// (a) Metadata fallback (the default, pre-any-override state): reasoning,
+	// steps, and suggestions all come from message.metadata['cinder:*'] since
+	// messageReasoning/messageSteps/messageSuggestions return undefined for
+	// this message (no callback opinion).
+	const reasoningToggle = page.getByRole('button', { name: /reasoning/i }).first();
+	await expect(reasoningToggle).toBeVisible();
+	await reasoningToggle.click();
+	await expect(log.getByText('Recall the EPR paradox and Bell inequality')).toBeVisible();
+	await expect(log.getByText('Recall physics')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Explain superposition' })).toBeVisible();
+	await expect(page.getByRole('button', { name: "What is Bell's theorem?" })).toBeVisible();
+
+	// (b) Suppression: the callback returns '' / [] for this message — the
+	// documented suppression-sentinel contract (resolveMessageReasoning /
+	// resolveMessageSteps / resolveMessageSuggestions in @lostgradient/chat).
+	// That is authoritative, so metadata does NOT fall through — nothing
+	// renders, even though the message still carries the metadata.
+	await page.getByTestId('metadata-mode-suppress').click();
+	await expect(log.getByText('Recall the EPR paradox and Bell inequality')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /reasoning/i })).toHaveCount(0);
+	await expect(log.getByText('Recall physics')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Explain superposition' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: "What is Bell's theorem?" })).toHaveCount(0);
+
+	// (c) Override: a non-empty callback return wins outright over metadata.
+	// The reasoning disclosure's expanded state persists per message id
+	// (owned by Chat's own disclosure state, independent of whether the
+	// toggle was rendered in between) — it was expanded in (a), so the
+	// override reasoning text is visible immediately, no re-click needed.
+	await page.getByTestId('metadata-mode-override').click();
+	await expect(
+		log.getByText('Callback override reasoning wins over cinder:reasoning metadata.')
+	).toBeVisible();
+	await expect(log.getByText('Callback step')).toBeVisible();
+	await expect(log.getByText('Supplied by messageSteps, not metadata.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Callback override suggestion' })).toBeVisible();
+	// The original metadata content is nowhere present now that the override wins.
+	await expect(log.getByText('Recall the EPR paradox and Bell inequality')).toHaveCount(0);
+	await expect(log.getByText('Recall physics')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Explain superposition' })).toHaveCount(0);
+
+	// Back to (a): clearing the override falls through to metadata again.
+	await page.getByTestId('metadata-mode-fallback').click();
+	await expect(log.getByText('Recall the EPR paradox and Bell inequality')).toBeVisible();
+	await expect(log.getByText('Recall physics')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Explain superposition' })).toBeVisible();
+	await expect(
+		log.getByText('Callback override reasoning wins over cinder:reasoning metadata.')
+	).toHaveCount(0);
+});

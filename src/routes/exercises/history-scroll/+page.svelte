@@ -6,6 +6,7 @@
 		createConversation,
 		prependMessages,
 		type ChatAdapter,
+		type ChatAdapterErrorEvent,
 		type ChatScrollStateChangeEvent,
 		type ChatUnreadIndicatorChangeEvent,
 		type ConversationHistory,
@@ -75,6 +76,15 @@
 	let bottomThreshold = $state(DEFAULT_SCROLL_CONFIGURATION.bottomThreshold);
 	let jumpThreshold = $state(DEFAULT_SCROLL_CONFIGURATION.jumpThreshold);
 
+	// Only consulted by `adapter.loadOlderMessages` — callback mode
+	// (`onloadhistory`) never sees these, since the adapter's method takes
+	// precedence and callback mode omits it entirely (see the conditional
+	// spread on `adapter` below).
+	let failMode = $state(false);
+	let slowLoad = $state(false);
+	let loadInvocationCount = $state(0);
+	let lastAdapterErrorCommand = $state<string | null>(null);
+
 	function pushLog(entry: string): void {
 		eventLog = [...eventLog, entry].slice(-6);
 	}
@@ -89,6 +99,10 @@
 		unreadCount = 0;
 		newMessageIndicatorVisible = false;
 		eventLog = [];
+		failMode = false;
+		slowLoad = false;
+		loadInvocationCount = 0;
+		lastAdapterErrorCommand = null;
 	}
 
 	function simulateIncomingMessage(): void {
@@ -122,11 +136,37 @@
 			const text = typeof message.content === 'string' ? message.content : 'attachment received';
 			conversation = appendMessages(conversation, { role: 'assistant', content: `Echo: ${text}` });
 		},
-		...(mode === 'adapter' ? { loadOlderMessages: async () => loadNextPage('adapter') } : {})
+		...(mode === 'adapter'
+			? {
+					loadOlderMessages: async () => {
+						loadInvocationCount += 1;
+
+						// Slow mode holds the promise open long enough for a
+						// double-click to land while the first invocation is
+						// still in flight — the assertion is that Chat's own
+						// `isLoadingHistory` guard keeps this a single-flight
+						// call, not that `loadInvocationCount` never moves.
+						if (slowLoad) {
+							await new Promise((resolve) => setTimeout(resolve, 400));
+						}
+
+						if (failMode) {
+							throw new Error('Simulated loadOlderMessages failure');
+						}
+
+						return loadNextPage('adapter');
+					}
+				}
+			: {})
 	});
 
 	async function handleLoadHistory(): Promise<void> {
 		await loadNextPage('callback');
+	}
+
+	function handleAdapterError(event: ChatAdapterErrorEvent): void {
+		lastAdapterErrorCommand = event.command;
+		pushLog(`adaptererror: command=${event.command}`);
 	}
 
 	// `atBottom`/`unreadCount`/`newMessageIndicatorVisible` flow through
@@ -226,6 +266,15 @@
 		>
 			Simulate incoming message
 		</button>
+
+		<label>
+			<input type="checkbox" bind:checked={failMode} data-testid="history-scroll-fail-mode" />
+			Fail next load
+		</label>
+		<label>
+			<input type="checkbox" bind:checked={slowLoad} data-testid="history-scroll-slow-load" />
+			Slow load
+		</label>
 	</div>
 
 	<dl
@@ -266,6 +315,18 @@
 				{conversation.ids.length}
 			</dd>
 		</div>
+		<div>
+			<dt style="display:inline;">loadInvocationCount:</dt>
+			<dd style="display:inline; margin:0;" data-testid="history-scroll-load-invocation-count">
+				{loadInvocationCount}
+			</dd>
+		</div>
+		<div>
+			<dt style="display:inline;">lastAdapterErrorCommand:</dt>
+			<dd style="display:inline; margin:0;" data-testid="history-scroll-adapter-error-command">
+				{lastAdapterErrorCommand ?? 'none'}
+			</dd>
+		</div>
 	</dl>
 
 	<ul
@@ -292,6 +353,7 @@
 			loadEarlierLabel="Load earlier messages (custom)"
 			loadingEarlierLabel="Loading earlier messages (custom)"
 			onloadhistory={handleLoadHistory}
+			onadaptererror={handleAdapterError}
 			onscrollstatechange={handleScrollStateChange}
 			onunreadindicatorchange={handleUnreadIndicatorChange}
 			onjumptolatest={handleJumpToLatest}

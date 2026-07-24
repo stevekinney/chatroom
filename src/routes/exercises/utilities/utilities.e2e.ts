@@ -43,7 +43,22 @@ test('utility functions render correctly against the seeded conversation', async
 	await expect(fullTranscript).toContainText('---');
 });
 
-test('ConversationExportActions copies the transcript and reports success', async ({ page }) => {
+// Mirrors `buildSeededConversation()` in +page.svelte: 4 seed messages
+// (user, assistant, tool-call, tool-result) followed by 20 padding messages
+// alternating user/assistant starting with user. Kept in one place so both
+// the Markdown and JSON export assertions below check against the same
+// ground truth as the page's own message rows.
+const EXPECTED_ROLES = [
+	'user',
+	'assistant',
+	'tool-call',
+	'tool-result',
+	...Array.from({ length: 20 }, (_, index) => (index % 2 === 0 ? 'user' : 'assistant'))
+];
+
+test('ConversationExportActions: Markdown export matches the full expected structure', async ({
+	page
+}) => {
 	await gotoHydrated(page, '/exercises/utilities');
 
 	const status = page.getByTestId('utilities-export-status');
@@ -54,11 +69,101 @@ test('ConversationExportActions copies the transcript and reports success', asyn
 	await expect(status).toHaveText('exported: markdown');
 
 	const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-	expect(clipboardText).toContain('**You:**');
+
+	// messagesToMarkdown joins `**RoleLabel:**\n\n<text>` blocks with
+	// `\n\n---\n\n` (utilities.ts in @lostgradient/chat) — one block per
+	// message, in transcript order, with no role-based filtering here (no
+	// system/developer messages in this seeded conversation).
+	const blocks = clipboardText.split('\n\n---\n\n');
+	expect(blocks).toHaveLength(EXPECTED_ROLES.length);
+
+	const roleLabels: Record<string, string> = {
+		user: 'You',
+		assistant: 'Assistant',
+		'tool-call': 'Tool Call',
+		'tool-result': 'Tool Result'
+	};
+	for (const [index, role] of EXPECTED_ROLES.entries()) {
+		expect(blocks[index].startsWith(`**${roleLabels[role]}:**\n\n`)).toBe(true);
+	}
+
+	// Text-bearing messages carry their real content...
+	expect(blocks[0]).toBe('**You:**\n\nWhat is the weather in **Portland**?');
+	expect(blocks[1]).toContain('Let me check that for you.');
+	expect(blocks[4]).toBe(
+		'**You:**\n\nPadding message 1 — enough text to give this row real height so the transcript overflows the viewport.'
+	);
+	expect(blocks[23]).toBe(
+		'**Assistant:**\n\nPadding message 20 — enough text to give this row real height so the transcript overflows the viewport.'
+	);
+
+	// ...while the tool-call/tool-result pair carries its payload in
+	// `toolCall`/`toolResult`, not `content` — formatMessageAsMarkdown is
+	// text-only, so their bodies are empty (see the utility-function
+	// assertions above for the same contract).
+	expect(blocks[2]).toBe('**Tool Call:**\n\n');
+	expect(blocks[3]).toBe('**Tool Result:**\n\n');
+});
+
+test('ConversationExportActions: JSON export round-trips the full conversation', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/exercises/utilities');
+
+	const status = page.getByTestId('utilities-export-status');
+	await expect(status).toHaveText('');
+
+	// Cross-check the exported ids against what the page actually rendered
+	// for the same messages, so "ids survive round-trip" is checked against
+	// real DOM state, not just re-asserted against the test's own fixture.
+	const rows = page.getByTestId('utilities-message-row');
+	const firstRowId = await rows.first().getAttribute('data-message-id');
+	const secondRowId = await rows.nth(1).getAttribute('data-message-id');
 
 	await page.getByRole('button', { name: 'Export conversation' }).click();
 	await page.getByRole('menuitem', { name: /Copy as JSON/ }).click();
 	await expect(status).toHaveText('exported: json');
+
+	const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+	const exported = JSON.parse(clipboardText) as {
+		schemaVersion: string;
+		exportedAt: string;
+		conversationId: string;
+		messages: Array<{
+			id: string;
+			role: string;
+			content: unknown;
+			toolCall?: { id: string; name: string; arguments: unknown };
+			toolResult?: { callId: string; outcome: string; content: unknown };
+		}>;
+	};
+
+	expect(exported.schemaVersion).toBe('1.0');
+	expect(new Date(exported.exportedAt).toString()).not.toBe('Invalid Date');
+	expect(exported.conversationId).toBe('utilities-demo');
+
+	// Message count and the full role sequence match the seeded conversation.
+	expect(exported.messages).toHaveLength(EXPECTED_ROLES.length);
+	expect(exported.messages.map((message) => message.role)).toEqual(EXPECTED_ROLES);
+
+	// ids and content survive the round-trip, including against the page's
+	// own rendered ids for the same two messages.
+	expect(exported.messages[0].id).toBe(firstRowId);
+	expect(exported.messages[0].content).toBe('What is the weather in **Portland**?');
+	expect(exported.messages[1].id).toBe(secondRowId);
+	expect(exported.messages[1].content).toContain('Let me check that for you.');
+
+	// The tool-call/tool-result pair is represented via `toolCall`/`toolResult`.
+	expect(exported.messages[2].toolCall).toEqual({
+		id: 'call-1',
+		name: 'get_weather',
+		arguments: { city: 'Portland' }
+	});
+	expect(exported.messages[3].toolResult).toEqual({
+		callId: 'call-1',
+		outcome: 'success',
+		content: { tempF: 54, sky: 'overcast' }
+	});
 });
 
 test('imperative Chat methods: announce, scroll, focus, and composer access', async ({ page }) => {
@@ -94,6 +199,30 @@ test('imperative Chat methods: announce, scroll, focus, and composer access', as
 	await page.getByTestId('utilities-clear-input').click();
 	await expect(composer).toHaveValue('');
 	await expect(page.getByTestId('utilities-composer-value')).toHaveText('Composer value: ""');
+});
+
+test('announce("assertive") writes into the assertive live region and clears after ~1s', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/exercises/utilities');
+
+	const chatWrapper = page.getByTestId('utilities-full-chat-wrapper');
+	// ChatStatusAnnouncer renders the assertive region as its own
+	// `aria-live="assertive"` element, separate from the `role="log"`
+	// transcript — per the docs it exists outside the log.
+	const assertiveRegion = chatWrapper.locator('[aria-live="assertive"]');
+	await expect(assertiveRegion).toHaveCount(1);
+	await expect(assertiveRegion).toHaveText('');
+
+	await page.getByTestId('utilities-announce-assertive').click();
+	await expect(assertiveRegion).toHaveText(
+		'Assertive announcement: imperative announce() probe fired.'
+	);
+
+	// Ground truth: Chat's own CONSUMER_ANNOUNCEMENT_CLEAR_DELAY_MS is 1000ms
+	// (container/chat.svelte) — poll for the region to empty out again rather
+	// than a fixed sleep, bounded to the documented delay plus margin.
+	await expect.poll(async () => assertiveRegion.textContent(), { timeout: 2000 }).toBe('');
 });
 
 test('standalone building blocks render and behave correctly without the Chat shell', async ({

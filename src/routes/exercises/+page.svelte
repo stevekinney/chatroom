@@ -12,7 +12,10 @@
 		| 'virtualization'
 		| 'presentation'
 		| 'artifacts'
-		| 'utilities';
+		| 'utilities'
+		| 'tool-approval'
+		| 'interleaving'
+		| 'contracts';
 
 	type Exercise = {
 		slug: ExerciseSlug;
@@ -75,6 +78,23 @@
 			slug: 'utilities',
 			title: 'Utilities',
 			description: 'Exercise the standalone message and export utility exports.'
+		},
+		{
+			slug: 'tool-approval',
+			title: 'Tool Approval',
+			description:
+				'Approve or deny action-required tool calls through the adapter and callback contract.'
+		},
+		{
+			slug: 'interleaving',
+			title: 'Interleaving',
+			description: 'Race streaming, editing, retrying, and stopping against a shared transcript.'
+		},
+		{
+			slug: 'contracts',
+			title: 'Contracts',
+			description:
+				'Pin the schema-version compatibility and height-collapse environmental contracts.'
 		}
 	];
 </script>

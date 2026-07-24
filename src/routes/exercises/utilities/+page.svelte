@@ -79,6 +79,10 @@
 		chat?.announce(announceText, 'polite');
 	}
 
+	function handleAnnounceAssertive(): void {
+		chat?.announce('Assertive announcement: imperative announce() probe fired.', 'assertive');
+	}
+
 	function refreshComposerSnapshot(): void {
 		composerSnapshot = chat?.getComposerValue() ?? '';
 	}
@@ -172,6 +176,13 @@
 		<div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
 			<button type="button" data-testid="utilities-announce" onclick={handleAnnounce}>
 				announce()
+			</button>
+			<button
+				type="button"
+				data-testid="utilities-announce-assertive"
+				onclick={handleAnnounceAssertive}
+			>
+				announce(assertive)
 			</button>
 			<button type="button" data-testid="utilities-scroll-top" onclick={() => chat?.scrollToTop()}>
 				scrollToTop()

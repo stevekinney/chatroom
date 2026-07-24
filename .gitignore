@@ -24,3 +24,6 @@ vite.config.ts.timestamp-*
 # Playwright
 test-results
 tmp/
+
+.playwright-mcp/
+.codex_stderr_path_tmp

@@ -86,6 +86,11 @@
 	);
 	let streaming = $state(false);
 	let overrides = $state<Record<string, MessageOverride>>({});
+	// The id of the assistant message that received `turn.metadata` (script
+	// turn 0). Exposed via `metadata-mode-*` controls below so the e2e suite
+	// can drive fallback/suppression/override precedence for that ONE message
+	// without introducing a second scripted turn.
+	let metadataDemoMessageId = $state<string | undefined>();
 	// Plain `let`: read only inside `handleSuggestionSelect`, never reactively.
 	// `Chat` does not clear a message's suggestion chips when one is selected —
 	// the documented pattern (since chat 0.2.0) is consumer suppression via
@@ -121,6 +126,9 @@
 		const replyText = turn?.reply ?? fallbackReply;
 		if (turn?.override) {
 			overrides = { ...overrides, [messageId]: turn.override };
+		}
+		if (turn?.metadata) {
+			metadataDemoMessageId = messageId;
 		}
 
 		let buffer = '';
@@ -160,6 +168,44 @@
 		void submit(label);
 	}
 
+	// Drives the reasoning/steps/suggestions callback state for
+	// `metadataDemoMessageId` through the three states the resolve* utilities
+	// (@lostgradient/chat) document: no override (metadata fallback), an
+	// empty override (the suppression sentinel — authoritative, does not fall
+	// through to metadata), and a non-empty override (wins outright).
+	function setMetadataFallback(): void {
+		if (!metadataDemoMessageId) return;
+		const next = { ...overrides };
+		delete next[metadataDemoMessageId];
+		overrides = next;
+	}
+
+	function setMetadataSuppressed(): void {
+		if (!metadataDemoMessageId) return;
+		overrides = {
+			...overrides,
+			[metadataDemoMessageId]: { reasoning: '', steps: [], suggestions: [] }
+		};
+	}
+
+	function setMetadataOverridden(): void {
+		if (!metadataDemoMessageId) return;
+		overrides = {
+			...overrides,
+			[metadataDemoMessageId]: {
+				reasoning: 'Callback override reasoning wins over cinder:reasoning metadata.',
+				steps: [
+					{
+						title: 'Callback step',
+						content: 'Supplied by messageSteps, not metadata.',
+						status: 'done'
+					}
+				],
+				suggestions: ['Callback override suggestion']
+			}
+		};
+	}
+
 	function messageReasoning(message: Message): string | undefined {
 		return overrides[message.id]?.reasoning;
 	}
@@ -174,6 +220,32 @@
 </script>
 
 <div style="height: 100dvh; display: flex; flex-direction: column;">
+	<div style="display: flex; gap: 0.5rem; padding: 0.5rem 1rem; flex-shrink: 0;">
+		<button
+			type="button"
+			data-testid="metadata-mode-fallback"
+			disabled={!metadataDemoMessageId}
+			onclick={setMetadataFallback}
+		>
+			Metadata fallback
+		</button>
+		<button
+			type="button"
+			data-testid="metadata-mode-suppress"
+			disabled={!metadataDemoMessageId}
+			onclick={setMetadataSuppressed}
+		>
+			Suppress overlays
+		</button>
+		<button
+			type="button"
+			data-testid="metadata-mode-override"
+			disabled={!metadataDemoMessageId}
+			onclick={setMetadataOverridden}
+		>
+			Override overlays
+		</button>
+	</div>
 	<div style="flex: 1; min-height: 0;">
 		<Chat
 			bind:this={chat}

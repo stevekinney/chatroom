@@ -5,6 +5,7 @@
 		appendStreamingMessage,
 		createConversation,
 		finalizeStreamingMessage,
+		prependMessages,
 		updateStreamingMessage,
 		type ConversationHistory,
 		type MessageInput
@@ -17,6 +18,14 @@
 	// scroll API.
 	const SEED_COUNT = 500;
 
+	// Planted well outside the initial bottom-anchored render window (which
+	// sits near index 499) so the search e2e test proves the virtualizer
+	// scrolls an unmounted row into the DOM rather than merely finding text
+	// that was already rendered. Kept as a suffix on the normal "Message N"
+	// content so index-adjacency assertions elsewhere still match it.
+	const SEARCH_NEEDLE_INDEX = 50;
+	const SEARCH_NEEDLE_TERM = 'gronkle-marker-50';
+
 	const STREAM_TOKENS = ['Streamed ', 'reply ', 'into ', 'the ', 'virtualized ', 'transcript.'];
 
 	function seedConversation(): ConversationHistory {
@@ -24,7 +33,10 @@
 		for (let index = 0; index < SEED_COUNT; index += 1) {
 			seedInputs.push({
 				role: index % 2 === 0 ? 'user' : 'assistant',
-				content: `Message ${index}`
+				content:
+					index === SEARCH_NEEDLE_INDEX
+						? `Message ${index} ${SEARCH_NEEDLE_TERM}`
+						: `Message ${index}`
 			});
 		}
 		return appendMessages(createConversation({ id: 'virtualization-demo' }), ...seedInputs);
@@ -79,6 +91,35 @@
 			streaming = false;
 		}
 	}
+
+	// Batch counters for the prepend/append interleaving exercise. Each
+	// batch/append gets its own monotonically increasing label so the e2e
+	// test can spot-check ordering ("Older batch 0-4" is immediately older
+	// than the original "Message 0", "Live append 1" immediately newer than
+	// the original last message) without depending on exact indices.
+	const PREPEND_BATCH_SIZE = 5;
+	let prependBatchCount = $state(0);
+	let appendCount = $state(0);
+
+	function prependOlderBatch(): void {
+		const batch: MessageInput[] = [];
+		for (let index = 0; index < PREPEND_BATCH_SIZE; index += 1) {
+			batch.push({
+				role: index % 2 === 0 ? 'user' : 'assistant',
+				content: `Older batch ${prependBatchCount}-${index}`
+			});
+		}
+		conversation = prependMessages(conversation, ...batch);
+		prependBatchCount += 1;
+	}
+
+	function appendLiveMessage(): void {
+		appendCount += 1;
+		conversation = appendMessages(conversation, {
+			role: 'assistant',
+			content: `Live append ${appendCount}`
+		});
+	}
 </script>
 
 <div style="height: 100dvh; display: flex; flex-direction: column; gap: 0.5rem;">
@@ -131,6 +172,12 @@
 			data-testid="virtualization-stream-message"
 		>
 			Stream new message
+		</button>
+		<button type="button" onclick={prependOlderBatch} data-testid="virtualization-prepend-older">
+			Prepend older batch
+		</button>
+		<button type="button" onclick={appendLiveMessage} data-testid="virtualization-append-live">
+			Append live message
 		</button>
 	</div>
 
