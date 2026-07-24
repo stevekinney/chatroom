@@ -19,8 +19,9 @@ const rememberNote = createTool({
 	description: 'Save a short note for later reference.',
 	input: z.object({ text: z.string() }),
 	policy: {
-		// agent-bureau#226: `allow` is still required alongside `status` even
-		// though armorer's own README example for `needs_approval` omits it.
+		// `allow` is still required alongside `status` even though armorer's
+		// own README example for `needs_approval` omits it.
+		// upstream: stevekinney/agent-bureau#226
 		beforeExecute: () => ({ allow: false, status: 'needs_approval', reason: 'Save this note?' })
 	},
 	async execute({ text }) {

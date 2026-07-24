@@ -77,6 +77,15 @@ test('jumpThreshold override suppresses the jump-to-latest button until reset', 
 	await page.getByTestId('history-scroll-jump-threshold').fill('100000');
 	await page.getByTestId('history-scroll-scroll-top').click();
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
+	// Wait for the scrollstatechange log entry, not just the bound prop: the
+	// bottom-sentinel IntersectionObserver can re-assert atBottom=true during
+	// the first frames of the programmatic scroll (it ignores the scroll
+	// guard), and a message appended in that window never accrues unread
+	// count. A real scroll event reporting atBottom=false means the viewport
+	// has genuinely left the bottom. upstream: stevekinney/cinder#864
+	await expect(page.getByTestId('history-scroll-event-log-item').last()).toHaveText(
+		'scrollstatechange: atBottom=false'
+	);
 	await page.getByTestId('history-scroll-simulate-incoming').click();
 
 	await expect(page.getByTestId('history-scroll-unread-count')).toHaveText('1');
