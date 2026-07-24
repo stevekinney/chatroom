@@ -75,15 +75,10 @@
 		};
 	}
 
-	// `$state.snapshot`'s return type recurses too deeply over
-	// ConversationHistory's shape for TS to resolve ("Type instantiation is
-	// excessively deep") — the runtime snapshot is exactly what these
-	// streaming builders need (a plain object, not a Svelte proxy — passing
-	// the proxy through breaks their internal structuredClone), so a single
-	// assertion bridges the typing gap.
-	// blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
+	// The streaming builders need a plain object, not a Svelte proxy — passing
+	// the proxy through breaks their internal structuredClone.
 	function snapshot(): ConversationHistory {
-		return $state.snapshot(conversation as unknown) as ConversationHistory;
+		return $state.snapshot(conversation);
 	}
 
 	async function withStreamingIndicator(run: () => Promise<void>): Promise<void> {

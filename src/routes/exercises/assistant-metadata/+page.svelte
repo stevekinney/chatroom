@@ -93,10 +93,8 @@
 	// knowing which message the chips belonged to.
 	let lastAssistantMessageId: string | undefined;
 
-	// Double cast: ConversationHistory blows TS's instantiation depth under
-	// `$state.snapshot`. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshot(): ConversationHistory {
-		return $state.snapshot(conversation as unknown) as ConversationHistory;
+		return $state.snapshot(conversation);
 	}
 
 	async function submit(content: string): Promise<void> {

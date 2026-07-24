@@ -99,12 +99,10 @@ completion before rendering.
 These complaints have standing GitHub issues — don't re-litigate or re-file them, check status
 instead:
 
-- [stevekinney/cinder#863](https://github.com/stevekinney/cinder/issues/863) (open) — chat pins
-  `conversationalist ^0.2.1 || ^0.4.1`, which excludes the `0.5.0` release carrying the
-  `prependMessages`/`buildMessage` builders (agent-bureau#244) and the `ConversationHistory`
-  interface change that fixes the `$state.snapshot` type-depth blowup (agent-bureau#245). The
-  workarounds for both stay in place, tagged with `upstream: stevekinney/cinder#863`, until
-  chat adopts conversationalist 0.5.
+- [stevekinney/cinder#863](https://github.com/stevekinney/cinder/issues/863) — **fixed and
+  verified** in `@lostgradient/chat@0.4.0`: chat ships conversationalist `^0.5.0` and
+  re-exports `prependMessages`/`buildMessage` (while keeping `createConversation`); the
+  `$state.snapshot` double-casts and the hand-rolled prepend are gone.
 - [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) — **fixed and
   verified** in `@lostgradient/chat@0.2.0`: conversationalist/zod moved to chat's own
   dependencies and `isJSONValue` is re-exported; chatroom dropped its direct
@@ -113,8 +111,8 @@ instead:
   verified** in `@lostgradient/chat@0.1.1`: components self-import their CSS. Listed here only
   so it doesn't get re-filed; the explicit `/styles` imports it used to require are gone.
 - The `/exercises` routes (one per Chat surface area) exist to smoke out this kind of friction;
-  building them filed cinder#778–786 and agent-bureau#244–245, all since resolved except
-  what #863 tracks.
+  building them filed cinder#778–786, cinder#863–864, and agent-bureau#244–245 — all since
+  resolved.
 
 ## Filing and resolving upstream issues
 

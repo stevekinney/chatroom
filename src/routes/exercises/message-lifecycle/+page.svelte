@@ -113,10 +113,8 @@
 	let logA = $state<string[]>([]);
 	let stopRequestedA = false;
 
-	// Double cast: ConversationHistory blows TS's instantiation depth under
-	// `$state.snapshot`. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshotA(): ConversationHistory {
-		return $state.snapshot(conversationA as unknown) as ConversationHistory;
+		return $state.snapshot(conversationA);
 	}
 
 	const adapter: ChatAdapter = {
@@ -165,9 +163,8 @@
 	let logB = $state<string[]>([]);
 	let stopRequestedB = false;
 
-	// Double cast as above. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshotB(): ConversationHistory {
-		return $state.snapshot(conversationB as unknown) as ConversationHistory;
+		return $state.snapshot(conversationB);
 	}
 
 	function handleSubmitB(event: ChatSubmitEvent): void {

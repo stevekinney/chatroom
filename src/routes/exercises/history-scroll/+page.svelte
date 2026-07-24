@@ -4,11 +4,11 @@
 		DEFAULT_SCROLL_CONFIGURATION,
 		appendMessages,
 		createConversation,
+		prependMessages,
 		type ChatAdapter,
 		type ChatScrollStateChangeEvent,
 		type ChatUnreadIndicatorChangeEvent,
 		type ConversationHistory,
-		type Message,
 		type MessageRole
 	} from '@lostgradient/chat';
 
@@ -60,39 +60,6 @@
 		return appendMessages(createConversation({ id: 'history-scroll-demo' }), ...seedInputs);
 	}
 
-	// `conversationalist`'s builders only ever append; there is no exported
-	// `prependMessages` mirroring `appendMessages`, even though Chat's own
-	// `onloadhistory` docs say "the consumer prepends compatible messages into
-	// `conversation`". History pagination is therefore hand-rolled here by
-	// constructing `Message` objects directly and renumbering `position` to
-	// match the new `ids` order.
-	// blocked on chat adopting conversationalist 0.5, where prependMessages/buildMessage shipped. upstream: stevekinney/cinder#863
-	function prependMessages(
-		conversation: ConversationHistory,
-		inputs: ArchivedMessageInput[]
-	): ConversationHistory {
-		const timestamp = new Date().toISOString();
-		const prepended: Message[] = inputs.map((input) => ({
-			id: crypto.randomUUID(),
-			role: input.role,
-			content: input.content,
-			position: 0,
-			createdAt: timestamp,
-			metadata: {},
-			hidden: false
-		}));
-
-		const ids = [...prepended.map((message) => message.id), ...conversation.ids];
-		const messages: Record<string, Message> = { ...conversation.messages };
-		for (const message of prepended) messages[message.id] = message;
-		ids.forEach((id, index) => {
-			const existing = messages[id];
-			if (existing) messages[id] = { ...existing, position: index };
-		});
-
-		return { ...conversation, ids, messages, updatedAt: timestamp };
-	}
-
 	let chat: ReturnType<typeof Chat> | undefined;
 
 	let mode = $state<HistoryMode>('adapter');
@@ -138,7 +105,7 @@
 			return { hasMore: false };
 		}
 
-		conversation = prependMessages(conversation, nextPage);
+		conversation = prependMessages(conversation, ...nextPage);
 		pagesQueue = pagesQueue.slice(1);
 		const hasMore = pagesQueue.length > 0;
 		moreHistoryAvailable = hasMore;

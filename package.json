@@ -39,8 +39,8 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.112.1",
 		"@lasercat/homogenaize": "^1.2.41",
-		"@lostgradient/chat": "^0.2.0",
-		"@lostgradient/cinder": "^0.17.0",
+		"@lostgradient/chat": "^0.4.0",
+		"@lostgradient/cinder": "^0.19.0",
 		"armorer": "^0.10.1",
 		"lucide-svelte": "0.577.0",
 		"zod": "4.4.1"
