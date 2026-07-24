@@ -78,23 +78,8 @@
 		composerSnapshot = chat?.getComposerValue() ?? '';
 	}
 
-	// Chat exposes no composer write-back API (`setComposerValue` /
-	// `insertAtRange`), so committing a popover selection means reaching into
-	// the textarea via `getEditorElement()` and dispatching a synthetic
-	// `input` event. upstream: stevekinney/cinder#780
 	function handleSelect(selection: ChatComposerPopoverSelection<SlashCommand>): void {
-		const editor = chat?.getEditorElement();
-		if (!editor) return;
-
-		const current = chat?.getComposerValue() ?? '';
-		const { start, end } = selection.range;
-		const insertion = selection.item.insert;
-		const nextValue = `${current.slice(0, start)}${insertion}${current.slice(end)}`;
-		const caret = start + insertion.length;
-
-		editor.value = nextValue;
-		editor.dispatchEvent(new Event('input', { bubbles: true }));
-		editor.setSelectionRange(caret, caret);
+		chat?.insertAtRange(selection.range, selection.item.insert);
 
 		lastSelection = {
 			label: selection.item.label,

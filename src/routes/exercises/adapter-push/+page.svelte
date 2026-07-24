@@ -63,7 +63,7 @@
 	let pushHandlers: ChatPushHandlers | undefined;
 
 	// Double cast: ConversationHistory blows TS's instantiation depth under
-	// `$state.snapshot`. upstream: stevekinney/agent-bureau#245
+	// `$state.snapshot`. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

@@ -9,15 +9,9 @@
 		type ChatSubmitEvent,
 		type ConversationHistory,
 		type JSONValue,
-		type Message
+		type Message,
+		type StepInfo
 	} from '@lostgradient/chat';
-
-	// `StepInfo` (the type `ChatProps.messageSteps` is declared in terms of) is
-	// not re-exported from `@lostgradient/chat`'s public entry point — only from
-	// an internal `./components/chat/utilities/types.js` path. Reconstructed
-	// locally rather than importing a private subpath. See friction notes.
-	type StepStatus = 'pending' | 'running' | 'done' | 'error';
-	type StepInfo = { title: string; content: string; status: StepStatus };
 
 	/**
 	 * A per-message override, keyed by message id, used to exercise the
@@ -93,14 +87,14 @@
 	let streaming = $state(false);
 	let overrides = $state<Record<string, MessageOverride>>({});
 	// Plain `let`: read only inside `handleSuggestionSelect`, never reactively.
-	// `Chat` does NOT clear a message's suggestion chips on its own when one is
-	// selected — the consumer is expected to suppress them, which requires
-	// knowing which message they belonged to.
-	// upstream: stevekinney/cinder#779
+	// `Chat` does not clear a message's suggestion chips when one is selected —
+	// the documented pattern (since chat 0.2.0) is consumer suppression via
+	// `messageSuggestions` returning `[]` for that message, which requires
+	// knowing which message the chips belonged to.
 	let lastAssistantMessageId: string | undefined;
 
 	// Double cast: ConversationHistory blows TS's instantiation depth under
-	// `$state.snapshot`. upstream: stevekinney/agent-bureau#245
+	// `$state.snapshot`. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

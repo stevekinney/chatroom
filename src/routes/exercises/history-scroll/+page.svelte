@@ -66,7 +66,7 @@
 	// `conversation`". History pagination is therefore hand-rolled here by
 	// constructing `Message` objects directly and renumbering `position` to
 	// match the new `ids` order.
-	// upstream: stevekinney/agent-bureau#244
+	// blocked on chat adopting conversationalist 0.5, where prependMessages/buildMessage shipped. upstream: stevekinney/cinder#863
 	function prependMessages(
 		conversation: ConversationHistory,
 		inputs: ArchivedMessageInput[]
@@ -162,14 +162,8 @@
 		await loadNextPage('callback');
 	}
 
-	// `atBottom`/`unreadCount`/`newMessageIndicatorVisible` are documented as
-	// bindable on `Chat`, but the shipped type declarations don't mark them
-	// bindable (svelte-check rejects `bind:atBottom` etc. even though the
-	// component implements `$bindable()` internally).
-	// upstream: stevekinney/cinder#786
-	// Chat fires these change events at the same sites it mutates the
-	// bindable props, so mirroring them into local state here reproduces the
-	// same two-way sync without `bind:`.
+	// `atBottom`/`unreadCount`/`newMessageIndicatorVisible` flow through
+	// `bind:`; the event handlers below only feed the visible event log.
 	//
 	// `onscrollstatechange` fires once per native `scroll` tick, not once per
 	// meaningful transition — a single smooth scroll across this exercise's
@@ -186,7 +180,6 @@
 	let lastLoggedAtBottom = true;
 
 	function handleScrollStateChange(event: ChatScrollStateChangeEvent): void {
-		atBottom = event.atBottom;
 		if (event.atBottom === lastLoggedAtBottom) return;
 
 		lastLoggedAtBottom = event.atBottom;
@@ -194,8 +187,6 @@
 	}
 
 	function handleUnreadIndicatorChange(event: ChatUnreadIndicatorChangeEvent): void {
-		unreadCount = event.unreadCount;
-		newMessageIndicatorVisible = event.newMessageIndicatorVisible;
 		pushLog(
 			`unreadindicatorchange: unreadCount=${event.unreadCount} visible=${event.newMessageIndicatorVisible}`
 		);
@@ -325,9 +316,9 @@
 			id="history-scroll-chat"
 			{conversation}
 			{adapter}
-			{atBottom}
-			{unreadCount}
-			{newMessageIndicatorVisible}
+			bind:atBottom
+			bind:unreadCount
+			bind:newMessageIndicatorVisible
 			{bottomThreshold}
 			{jumpThreshold}
 			{moreHistoryAvailable}

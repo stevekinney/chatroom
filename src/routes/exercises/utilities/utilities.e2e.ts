@@ -10,7 +10,7 @@ test('utility functions render correctly against the seeded conversation', async
 	await expect(rows).toHaveCount(24);
 
 	const userRow = rows.first();
-	await expect(userRow.getByTestId('utilities-role-label')).toHaveText('User');
+	await expect(userRow.getByTestId('utilities-role-label')).toHaveText('You');
 	await expect(userRow.getByTestId('utilities-format-as-markdown')).toHaveText(
 		'What is the weather in **Portland**?'
 	);
@@ -36,7 +36,7 @@ test('utility functions render correctly against the seeded conversation', async
 	await expect(toolResultRow.getByTestId('utilities-get-message-text')).toHaveText('');
 
 	const fullTranscript = page.getByTestId('utilities-messages-to-markdown');
-	await expect(fullTranscript).toContainText('**User:**');
+	await expect(fullTranscript).toContainText('**You:**');
 	await expect(fullTranscript).toContainText('**Assistant:**');
 	await expect(fullTranscript).toContainText('**Tool Call:**');
 	await expect(fullTranscript).toContainText('**Tool Result:**');
@@ -54,7 +54,7 @@ test('ConversationExportActions copies the transcript and reports success', asyn
 	await expect(status).toHaveText('exported: markdown');
 
 	const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-	expect(clipboardText).toContain('**User:**');
+	expect(clipboardText).toContain('**You:**');
 
 	await page.getByRole('button', { name: 'Export conversation' }).click();
 	await page.getByRole('menuitem', { name: /Copy as JSON/ }).click();

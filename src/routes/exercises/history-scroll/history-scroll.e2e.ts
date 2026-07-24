@@ -77,6 +77,14 @@ test('jumpThreshold override suppresses the jump-to-latest button until reset', 
 	await page.getByTestId('history-scroll-jump-threshold').fill('100000');
 	await page.getByTestId('history-scroll-scroll-top').click();
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
+	// Wait for the scrollstatechange log entry, not just the bound prop:
+	// non-virtualized scrollToTop() flips the bindable synchronously but the
+	// internal scroll state (which unread accrual reads) only updates on the
+	// first real scroll event — a message appended in that window is never
+	// counted. upstream: stevekinney/cinder#864
+	await expect(page.getByTestId('history-scroll-event-log-item').last()).toHaveText(
+		'scrollstatechange: atBottom=false'
+	);
 	await page.getByTestId('history-scroll-simulate-incoming').click();
 
 	await expect(page.getByTestId('history-scroll-unread-count')).toHaveText('1');

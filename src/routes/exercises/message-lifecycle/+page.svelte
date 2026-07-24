@@ -114,7 +114,7 @@
 	let stopRequestedA = false;
 
 	// Double cast: ConversationHistory blows TS's instantiation depth under
-	// `$state.snapshot`. upstream: stevekinney/agent-bureau#245
+	// `$state.snapshot`. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshotA(): ConversationHistory {
 		return $state.snapshot(conversationA as unknown) as ConversationHistory;
 	}
@@ -165,7 +165,7 @@
 	let logB = $state<string[]>([]);
 	let stopRequestedB = false;
 
-	// Double cast as above. upstream: stevekinney/agent-bureau#245
+	// Double cast as above. blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshotB(): ConversationHistory {
 		return $state.snapshot(conversationB as unknown) as ConversationHistory;
 	}

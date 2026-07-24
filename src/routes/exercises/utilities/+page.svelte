@@ -15,7 +15,6 @@
 		getMessageRoleLabel,
 		getMessageText,
 		messagesToMarkdown,
-		type ChatScrollStateChangeEvent,
 		type ConversationHistory,
 		type Message,
 		type MessageInput,
@@ -74,17 +73,6 @@
 	let announceText = $state('');
 	let atBottom = $state(true);
 	let composerSnapshot = $state('');
-
-	// `atBottom` is documented as bindable on `Chat`, but the shipped type
-	// declarations don't mark it bindable (svelte-check rejects `bind:atBottom`
-	// even though the component implements `$bindable()` internally).
-	// upstream: stevekinney/cinder#786
-	// Chat fires `onscrollstatechange` at the same
-	// site it mutates the bindable prop, so mirroring it into local state here
-	// reproduces the same two-way sync without `bind:`.
-	function handleScrollStateChange(event: ChatScrollStateChangeEvent): void {
-		atBottom = event.atBottom;
-	}
 
 	function handleAnnounce(): void {
 		announceText = 'Announcement: imperative announce() probe fired.';
@@ -216,13 +204,7 @@
 			data-testid="utilities-full-chat-wrapper"
 			style="height: 24rem; border: 1px solid var(--cinder-border);"
 		>
-			<Chat
-				bind:this={chat}
-				id="utilities-full-chat"
-				{conversation}
-				{atBottom}
-				onscrollstatechange={handleScrollStateChange}
-			/>
+			<Chat bind:this={chat} id="utilities-full-chat" {conversation} bind:atBottom />
 		</div>
 	</section>
 

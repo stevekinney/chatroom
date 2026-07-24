@@ -6,6 +6,7 @@
 		cancelStreamingMessage,
 		createConversation,
 		finalizeStreamingMessage,
+		isJSONValue,
 		updateStreamingMessage,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
@@ -13,7 +14,6 @@
 		type ToolResult
 	} from '@lostgradient/chat';
 	import { resolve } from '$app/paths';
-	import { isJSONValue } from 'conversationalist';
 	import { SvelteMap } from 'svelte/reactivity';
 
 	import type { SignedPendingToolApproval } from 'armorer';
@@ -81,7 +81,7 @@
 	// streaming builders need (a plain object, not a Svelte proxy — passing
 	// the proxy through breaks their internal structuredClone), so a single
 	// assertion bridges the typing gap.
-	// upstream: stevekinney/agent-bureau#245
+	// blocked on chat adopting conversationalist 0.5, where the fix shipped. upstream: stevekinney/cinder#863
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation as unknown) as ConversationHistory;
 	}

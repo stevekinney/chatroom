@@ -27,7 +27,7 @@ test('virtualized transcript keeps DOM row count far below the message count', a
 	await expect.poll(() => page.locator('.chat-message').count()).toBeLessThan(100);
 });
 
-test('scrollToBottom reaches the last message; scrollToTop is fought back to the bottom (upstream bug)', async ({
+test('scrollToTop and scrollToBottom navigate the virtualized transcript end to end', async ({
 	page
 }) => {
 	await gotoHydrated(page, '/exercises/virtualization');
@@ -37,18 +37,12 @@ test('scrollToBottom reaches the last message; scrollToTop is fought back to the
 	// without any scrolling.
 	await expect(page.getByText('Message 499')).toBeVisible();
 
-	// `chat.scrollToTop()` is documented to navigate to the start of a
-	// virtualized transcript, but under default (non-reduced) motion settings
-	// it currently never gets there: Chat's own auto-stick-to-bottom effect
-	// re-triggers on every row remeasurement during the smooth-scroll
-	// animation (because `atBottom` never flips to `false` for a
-	// programmatic scroll) and repeatedly snaps the viewport back toward the
-	// bottom. See stevekinney/cinder#774 for the root cause and a
-	// `prefers-reduced-motion` repro that avoids the race. This assertion
-	// documents the actual current behavior rather than the intended one.
+	// `chat.scrollToTop()` reaches the start of the virtualized transcript
+	// (cinder#774 — the auto-stick-to-bottom effect no longer fights the
+	// programmatic scroll).
 	await page.getByTestId('virtualization-scroll-top').click();
-	await page.waitForTimeout(1000);
-	await expect(page.getByText('Message 499')).toBeVisible();
+	await expect(page.getByText('Message 0')).toBeVisible();
+	await expect(page.getByText('Message 499')).not.toBeVisible();
 
 	await page.getByTestId('virtualization-scroll-bottom').click();
 	await expect(page.getByText('Message 499')).toBeVisible();

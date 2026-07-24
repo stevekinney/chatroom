@@ -56,20 +56,15 @@ test('opens, closes, and reopens an artifact from conversation activity', async 
 	await expect(page.getByRole('complementary').getByText('Landing Page Hero')).toBeVisible();
 	await expect(layout).toHaveAttribute('data-panel-open', 'true');
 
-	// Opening a different artifact from a tool-call row (svg type, exercising
-	// the "open from a tool-result" path) is currently unreachable: Chat's own
-	// CSS unconditionally sets `.chat-message-footer { display: none }` for
-	// any row whose wrapper carries `[data-tool-pair]` (i.e. any paired
-	// tool-call/tool-result row), with no hover/focus override — a
-	// `display: none` element can't be focused, hovered, or hit-tested by
-	// definition. That makes the `messageActions` snippet's own button
-	// permanently unreachable on this row, not merely hover-timing-flaky like
-	// the html/code/mermaid rows above. See stevekinney/cinder#777. This
-	// assertion documents that unreachability rather than pretending the
-	// panel opens.
+	// Opening an artifact from the tool-call row (svg type): the artifact
+	// metadata lives on the folded tool-RESULT message, and Chat resolves it
+	// into the visible tool-call row's `ChatRowContext.artifact` (the
+	// convention added in chat 0.2.0 — resolved cinder#777/#783).
 	const openSvg = page.getByTestId('open-artifact-svg');
-	await expect(openSvg).toBeAttached();
-	await expect(openSvg).toBeHidden();
+	await openSvg.focus();
+	await openSvg.click();
+	const svgPanel = page.getByRole('complementary');
+	await expect(svgPanel.getByText('Company Logo')).toBeVisible();
 
 	// Code artifact renders as a code block, not an iframe.
 	const openCode = page.getByTestId('open-artifact-code');
@@ -80,20 +75,17 @@ test('opens, closes, and reopens an artifact from conversation activity', async 
 	await expect(codePanel.locator('pre.artifact-code-block[data-language="svelte"]')).toBeVisible();
 	await expect(codePanel.getByText('tiers')).toBeVisible();
 
-	// Mermaid artifact renders as source with the "install Mermaid" note
-	// rather than a rendered diagram (documented, undocumented-until-now
-	// behavior of ArtifactViewer — see friction notes).
+	// Mermaid artifact renders through the consumer-supplied `mermaidRenderer`
+	// snippet (the extension point added in chat 0.2.0 for cinder#784) rather
+	// than the built-in raw-source fallback.
 	const openMermaid = page.getByTestId('open-artifact-mermaid');
 	await openMermaid.focus();
 	await openMermaid.click();
 	const mermaidPanel = page.getByRole('complementary');
 	await expect(mermaidPanel.getByText('Artifact Cache Flow')).toBeVisible();
-	await expect(
-		mermaidPanel.locator('pre.artifact-code-block[data-language="mermaid"]')
-	).toBeVisible();
-	await expect(
-		mermaidPanel.getByText('Install the Mermaid library to render diagrams.')
-	).toBeVisible();
+	await expect(mermaidPanel.getByTestId('custom-mermaid-renderer')).toContainText(
+		'custom renderer: flowchart TD'
+	);
 
 	// The chat log itself is unaffected by panel state.
 	await expect(log.getByText('Generate a hero section for the landing page.')).toBeVisible();

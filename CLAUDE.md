@@ -63,10 +63,12 @@ component's own module imports its CSS (preserved by the package's `sideEffects`
 `@lostgradient/chat/styles` imports; that was the cinder#754 workaround, removed once the fix
 shipped.
 
-Conversation data flows through **`conversationalist`**, which Chat re-exports type-wise but
-which we currently must also install directly (`conversationalist`, `zod`) per Cinder's own
-docs — see [Known upstream friction](#known-upstream-friction). Build transcripts with the
-re-exported builders rather than hand-rolling `ConversationHistory` objects:
+Conversation data flows through **`conversationalist`**, which chat now owns as a regular
+dependency and re-exports (types, builders, and helpers like `isJSONValue`) — as of
+`@lostgradient/chat@0.2.0` (cinder#753, fixed) chatroom no longer installs it directly. `zod`
+remains a direct dependency only because our armorer tool schemas use it, not for Chat. Build
+transcripts with the re-exported builders rather than hand-rolling `ConversationHistory`
+objects:
 
 ```ts
 import {
@@ -97,15 +99,22 @@ completion before rendering.
 These complaints have standing GitHub issues — don't re-litigate or re-file them, check status
 instead:
 
-- [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) (open; reopened
-  July 2026 after a premature close) — Chat requires host apps to separately install
-  `conversationalist` and `zod`, a peer-dependency-in-disguise. The ask is for Cinder to fully
-  own that dependency and re-export what's needed (including helpers like `isJSONValue`).
+- [stevekinney/cinder#863](https://github.com/stevekinney/cinder/issues/863) (open) — chat pins
+  `conversationalist ^0.2.1 || ^0.4.1`, which excludes the `0.5.0` release carrying the
+  `prependMessages`/`buildMessage` builders (agent-bureau#244) and the `ConversationHistory`
+  interface change that fixes the `$state.snapshot` type-depth blowup (agent-bureau#245). The
+  workarounds for both stay in place, tagged with `upstream: stevekinney/cinder#863`, until
+  chat adopts conversationalist 0.5.
+- [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) — **fixed and
+  verified** in `@lostgradient/chat@0.2.0`: conversationalist/zod moved to chat's own
+  dependencies and `isJSONValue` is re-exported; chatroom dropped its direct
+  `conversationalist` install.
 - [stevekinney/cinder#754](https://github.com/stevekinney/cinder/issues/754) — **fixed and
   verified** in `@lostgradient/chat@0.1.1`: components self-import their CSS. Listed here only
   so it doesn't get re-filed; the explicit `/styles` imports it used to require are gone.
 - The `/exercises` routes (one per Chat surface area) exist to smoke out this kind of friction;
-  building them filed cinder#778–786 and agent-bureau#244–245.
+  building them filed cinder#778–786 and agent-bureau#244–245, all since resolved except
+  what #863 tracks.
 
 ## Filing and resolving upstream issues
 
@@ -141,9 +150,10 @@ agent-bureau loop is the same shape, just without a `sync:*` script yet — sync
 
 **Every local workaround carries an `upstream:` marker.** When a workaround genuinely can't be
 avoided while waiting on a fix, tag it where it lives with a code comment of the form
-`upstream: <owner>/<repo>#<issue>` (e.g. `upstream: stevekinney/cinder#786`). That marker is
-what `bun run check:upstream` scans for — an untagged workaround is invisible to the cleanup
-loop and will outlive its fix.
+`upstream: <owner>/<repo>#<issue>`. That marker is what `bun run check:upstream` scans for — an
+untagged workaround is invisible to the cleanup loop and will outlive its fix. (Don't write a
+concrete `upstream: owner/repo#N` reference in prose or docs unless it marks a real, live
+workaround — the scanner treats every match as one.)
 
 **Verify state after filing or commenting — don't assume a comment means "tracked."** A GitHub
 issue can be closed by something else (a bulk sweep tied to an unrelated release, another
