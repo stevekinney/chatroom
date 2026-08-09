@@ -10,7 +10,6 @@
 		type ChatRowContext,
 		type ConversationHistory
 	} from '@lostgradient/chat';
-	import { Button } from '@lostgradient/cinder/button';
 
 	const heroHtml = `<!doctype html><html><body style="font-family: sans-serif; margin: 0; padding: 3rem; background: #f5f3ff; color: #2e1065;"><h1>Build faster</h1><p>A generated hero section, rendered in a sandboxed iframe.</p></body></html>`;
 
@@ -233,18 +232,17 @@
 				{#snippet messageActions(context: ChatRowContext)}
 					{#if context.artifact}
 						{@const artifact = context.artifact}
-						<!-- Cinder Button rather than a bare <button>: the action bar
-						     applies no styling to consumer-slotted content, so a naked
-						     button renders as unstyled floating text next to the styled
-						     built-in copy button. upstream: stevekinney/cinder#887 -->
-						<Button
-							size="xs"
-							variant="ghost"
+						<!-- Native button on the documented `chat-message-action-button`
+						     class contract (cinder#887): the action bar styles it to
+						     match the built-in actions. -->
+						<button
+							type="button"
+							class="chat-message-action-button"
 							data-testid={artifactTestId(artifact)}
 							onclick={() => openArtifact(artifact)}
 						>
 							View "{artifact.title}"
-						</Button>
+						</button>
 					{/if}
 				{/snippet}
 			</Chat>

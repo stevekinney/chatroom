@@ -258,7 +258,7 @@
 			{messageReasoning}
 			{messageSteps}
 			{messageSuggestions}
-			onsuggestionselect={handleSuggestionSelect}
+			onSuggestionSelect={handleSuggestionSelect}
 		/>
 	</div>
 </div>

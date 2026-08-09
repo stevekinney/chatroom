@@ -3,6 +3,8 @@
 		Chat,
 		appendMessages,
 		appendStreamingMessage,
+		appendToolCall,
+		appendToolResult,
 		cancelStreamingMessage,
 		createConversation,
 		finalizeStreamingMessage,
@@ -37,6 +39,9 @@
 	let chat: ReturnType<typeof Chat> | undefined;
 	// Plain `let`: reset per user turn, read only inside runTurn's own recursion.
 	let turnCount = 0;
+	// Plain `let`: one controller per assistant turn so Stop can abort the
+	// in-flight fetch. Read only imperatively from stopGenerating.
+	let turnController: AbortController | undefined;
 	// Plain `let`: server-issued approval descriptors, needed only to resume
 	// on approve. Not part of the rendered transcript.
 	const pendingApprovals = new SvelteMap<string, SignedPendingToolApproval>();
@@ -107,11 +112,15 @@
 		let buffer = '';
 		let sawToolResult = false;
 
+		turnController = new AbortController();
+		const { signal } = turnController;
+
 		try {
 			const response = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ conversation })
+				body: JSON.stringify({ conversation }),
+				signal
 			});
 
 			if (!response.ok || !response.body) {
@@ -143,10 +152,10 @@
 
 					if (event.type === 'tool_call') {
 						if (!isJSONValue(event.arguments)) continue;
-						conversation = appendMessages(conversation, {
-							role: 'tool-call',
-							content: '',
-							toolCall: { id: event.id, name: event.name, arguments: event.arguments }
+						conversation = appendToolCall(conversation, {
+							id: event.id,
+							name: event.name,
+							arguments: event.arguments
 						});
 						continue;
 					}
@@ -157,16 +166,12 @@
 					if (event.pendingApproval) {
 						pendingApprovals.set(event.callId, event.pendingApproval);
 					}
-					conversation = appendMessages(conversation, {
-						role: 'tool-result',
-						content: '',
-						toolResult: {
-							callId: event.callId,
-							outcome: event.outcome,
-							content: event.content,
-							...(event.error ? { error: event.error } : {}),
-							...(event.action ? { action: event.action } : {})
-						}
+					conversation = appendToolResult(conversation, {
+						callId: event.callId,
+						outcome: event.outcome,
+						content: event.content,
+						...(event.error ? { error: event.error } : {}),
+						...(event.action ? { action: event.action } : {})
 					});
 				}
 			}
@@ -175,9 +180,18 @@
 				? finalizeStreamingMessage(snapshot(), messageId)
 				: cancelStreamingMessage(snapshot(), messageId);
 		} catch (cause) {
+			// A user-initiated Stop is not an error: keep whatever streamed in
+			// before the abort instead of discarding the partial message.
+			if (signal.aborted) {
+				conversation = buffer
+					? finalizeStreamingMessage(snapshot(), messageId)
+					: cancelStreamingMessage(snapshot(), messageId);
+				return;
+			}
 			conversation = cancelStreamingMessage(snapshot(), messageId);
 			throw cause;
 		} finally {
+			turnController = undefined;
 			chat?.endStreaming();
 		}
 
@@ -187,6 +201,9 @@
 	}
 
 	const adapter: ChatAdapter = {
+		stopGenerating: async () => {
+			turnController?.abort();
+		},
 		sendMessage: async (message) => {
 			error = null;
 			conversation = appendMessages(conversation, message);
@@ -245,6 +262,10 @@
 	}
 </script>
 
+<svelte:head>
+	<title>Chatroom</title>
+</svelte:head>
+
 <div style="height: 100dvh; display: flex; flex-direction: column;">
 	<a href={resolve('/exercises')} style="padding: 0.5rem 1rem;">Exercises</a>
 	{#if error}
@@ -259,6 +280,7 @@
 			{conversation}
 			{adapter}
 			{streaming}
+			scrollFadeVisible
 			onadaptererror={handleAdapterError}
 		/>
 	</div>

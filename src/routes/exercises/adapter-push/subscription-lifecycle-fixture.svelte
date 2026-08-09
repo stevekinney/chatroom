@@ -144,12 +144,9 @@
 		</div>
 	</dl>
 	{#if mounted}
-		<!-- 480px rather than a compact box: the typing indicator collapses to
-		     zero height once the transcript overflows.
-		     upstream: stevekinney/cinder#910 -->
 		<div
 			data-testid="lifecycle-fixture-chat"
-			style="height: 480px; border: 1px solid var(--cinder-border);"
+			style="height: 240px; border: 1px solid var(--cinder-border);"
 		>
 			<Chat id="adapter-push-lifecycle-chat" {conversation} {adapter} />
 		</div>

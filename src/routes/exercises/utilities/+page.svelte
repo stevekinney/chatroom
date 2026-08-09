@@ -245,7 +245,7 @@
 			<ToolCallGroup
 				pair={standaloneToolPair}
 				expanded={standaloneToolExpanded}
-				ontoggle={() => (standaloneToolExpanded = !standaloneToolExpanded)}
+				onToggle={() => (standaloneToolExpanded = !standaloneToolExpanded)}
 			/>
 		</div>
 

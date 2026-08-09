@@ -77,12 +77,9 @@ test('jumpThreshold override suppresses the jump-to-latest button until reset', 
 	await page.getByTestId('history-scroll-jump-threshold').fill('100000');
 	await page.getByTestId('history-scroll-scroll-top').click();
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
-	// Wait for the scrollstatechange log entry, not just the bound prop: the
-	// bottom-sentinel IntersectionObserver can re-assert atBottom=true during
-	// the first frames of the programmatic scroll (it ignores the scroll
-	// guard), and a message appended in that window never accrues unread
-	// count. A real scroll event reporting atBottom=false means the viewport
-	// has genuinely left the bottom. upstream: stevekinney/cinder#864
+	// Synchronize on the scrollstatechange event, not just the bound prop:
+	// appending before Chat's scroll tracking has settled races the unread
+	// bookkeeping this test is asserting on.
 	await expect(page.getByTestId('history-scroll-event-log-item').last()).toHaveText(
 		'scrollstatechange: atBottom=false'
 	);
@@ -145,7 +142,7 @@ test('history pagination via adapter.loadOlderMessages prepends pages and exhaus
 	await expect(loadEarlier).toHaveCount(0);
 });
 
-test('history pagination via onloadhistory callback (no adapter.loadOlderMessages)', async ({
+test('history pagination via onLoadHistory callback (no adapter.loadOlderMessages)', async ({
 	page
 }) => {
 	await gotoHydrated(page, '/exercises/history-scroll');
@@ -168,7 +165,7 @@ test('history pagination via onloadhistory callback (no adapter.loadOlderMessage
 			.getByText('callback: loaded a page, hasMore=true', { exact: true })
 	).toBeVisible();
 
-	// Exhaust the remaining two pages: onloadhistory is driving this (there is
+	// Exhaust the remaining two pages: onLoadHistory is driving this (there is
 	// no adapter.loadOlderMessages in this mode), and moreHistoryAvailable is
 	// managed entirely by this page's own state, not by Chat internals.
 	await loadEarlier.click();
@@ -272,33 +269,11 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 		});
 	}
 
-	// Reach it via a real wheel gesture, not a programmatic scroll
-	// (`scrollIntoView`/`scrollTop =`): a programmatic scroll isn't
-	// recognized as user-initiated, so the bottom-sentinel
-	// IntersectionObserver can re-assert `atBottom=true` on the next frame
-	// and the auto-stick-to-bottom effect snaps the viewport back down —
-	// exactly the quirk in the jumpThreshold test above. A wheel gesture is
-	// genuinely user-initiated, so `atBottom` stays honestly false through
-	// the prepend below. upstream: stevekinney/cinder#864
-	const messageList = page.locator('.chat-timeline, [role="log"]').first();
-	const messageListBox = await messageList.boundingBox();
-	if (!messageListBox) throw new Error('message list has no bounding box');
-
-	await page.mouse.move(
-		messageListBox.x + messageListBox.width / 2,
-		messageListBox.y + messageListBox.height / 2
-	);
-	for (let tick = 0; tick < 15; tick += 1) {
-		await page.mouse.wheel(0, -2000);
-	}
-
-	// Chat starts pinned to the bottom (SEED_COUNT=60), so this scroll moves
-	// it far away from the bottom. Wait for the real scrollstatechange
-	// event, not just the DOM scroll position: Chat's own "first visible
-	// message" bookkeeping (which history anchoring reads from) updates on
-	// the same scroll-tracking pass as `atBottom`, and asserting on scrollTop
-	// alone can race ahead of it — see the identical reasoning in the
-	// jumpThreshold test above.
+	// Chat starts pinned to the bottom (SEED_COUNT=60). A programmatic
+	// scroll-to-top is respected since cinder#864's guarded sentinel
+	// settlement — the bottom sentinel no longer re-asserts atBottom=true
+	// mid-scroll and snaps the viewport back down.
+	await page.getByTestId('history-scroll-scroll-top').click();
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
 	await expect(page.getByText(/^Live message 5 —/)).toBeVisible();
 
@@ -316,12 +291,13 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 
 	// The real oracle is the anchored message's on-screen position — history
 	// anchoring means prepending older messages must not shift what is
-	// already visible. Chat's restore currently computes the WRONG offset
-	// (overshoots by ~2000px, throwing the anchor thousands of px above the
-	// viewport), so this pins the broken behavior rather than the intended
-	// contract; flip to `toBeLessThanOrEqual(3)` once fixed.
-	// upstream: stevekinney/cinder#911
+	// already visible. At scrollTop=0 the restore is broken and
+	// NONDETERMINISTIC: sometimes the anchor shifts by exactly the
+	// prepended block's height (~247px for these 4 rows), sometimes by a
+	// #911-style overshoot (~1790px measured). Pinned as "not stable"
+	// rather than an exact band; flip to `toBeLessThanOrEqual(3)` once
+	// fixed. upstream: stevekinney/cinder#1237
 	const boxAfter = await readAnchorTop();
 	expect(boxAfter).not.toBeNull();
-	expect(Math.abs(boxAfter! - boxBefore!)).toBeGreaterThan(1000);
+	expect(Math.abs(boxAfter! - boxBefore!)).toBeGreaterThan(100);
 });

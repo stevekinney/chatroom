@@ -79,9 +79,12 @@ test.describe('interleaving: two concurrent retryMessage dispatches for the same
 		await page.close();
 	});
 
-	test('Chat does not guard a second programmatic retryMessage; both run, and the transcript still converges cleanly', async () => {
-		// Pins the missing retry re-entrancy guard.
-		// upstream: stevekinney/cinder#897
+	test('a second PROGRAMMATIC retryMessage for an in-flight id still dispatches; only the UI path is single-flighted', async () => {
+		// cinder#897's fix single-flights the UI retry path (rapid double-click
+		// dispatches once — covered in message-lifecycle.e2e.ts), but a direct
+		// `chat.retryMessage(id)` call while the first retry is still streaming
+		// is NOT guarded and double-dispatches the adapter command.
+		// upstream: stevekinney/cinder#1235
 		const chat = page.locator('#interleaving-chat');
 		const log = page.getByTestId('interleaving-log');
 		const messagesLog = chat.getByRole('log', { name: 'Messages' });

@@ -66,13 +66,14 @@ test('opens, closes, and reopens an artifact from conversation activity', async 
 	const svgPanel = page.getByRole('complementary');
 	await expect(svgPanel.getByText('Company Logo')).toBeVisible();
 
-	// Code artifact renders as a code block, not an iframe.
+	// Code artifact renders through Cinder's syntax-highlighted CodeBlock
+	// (the chat 0.4.1 default from cinder#893), not a bare <pre> or iframe.
 	const openCode = page.getByTestId('open-artifact-code');
 	await openCode.focus();
 	await openCode.click();
 	const codePanel = page.getByRole('complementary');
 	await expect(codePanel.getByText('Pricing Table Source')).toBeVisible();
-	await expect(codePanel.locator('pre.artifact-code-block[data-language="svelte"]')).toBeVisible();
+	await expect(codePanel.locator('.cinder-code-block.artifact-code-block')).toBeVisible();
 	await expect(codePanel.getByText('tiers')).toBeVisible();
 
 	// Mermaid artifact renders through the consumer-supplied `mermaidRenderer`

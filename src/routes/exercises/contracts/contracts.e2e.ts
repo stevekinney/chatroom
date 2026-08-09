@@ -45,17 +45,28 @@ test.describe('contracts: schema version', () => {
 		await expect(chat.getByText('Yes — this is a seeded reply.')).toBeVisible();
 	});
 
-	test('FRICTION: a newer schema silently renders as if fine, despite the README stating it "requires upgrading @lostgradient/chat"', async () => {
-		const chat = page.locator('#contracts-schema-newer-chat');
+	test('a newer schema still renders, but warns in the console that @lostgradient/chat needs upgrading', async ({
+		browser
+	}) => {
+		// The schema-version contract (cinder#896, fixed in PR #903): Chat
+		// console-warns when a history is stamped with a newer schema version
+		// than it supports. The warning fires on mount, so a fresh page with
+		// the listener attached before navigation is required.
+		const warnPage = await browser.newPage();
+		const schemaWarnings: string[] = [];
+		warnPage.on('console', (message) => {
+			if (message.type() === 'warning' && message.text().includes('schema version')) {
+				schemaWarnings.push(message.text());
+			}
+		});
+		await gotoHydrated(warnPage, '/exercises/contracts');
 
-		// The documented contract implies SOME signal here — an error
-		// boundary, a warning, a refusal to render. There is none: Chat never
-		// reads `conversation.schemaVersion` at all (confirmed against the
-		// Chat package source), so a newer-schema history renders exactly
-		// like the current-schema one, with no indication anything is stale.
-		// upstream: stevekinney/cinder#896
+		const chat = warnPage.locator('#contracts-schema-newer-chat');
 		await expect(chat.getByText('Yes — this is a seeded reply.')).toBeVisible();
-		await expect(chat.getByRole('alert')).toHaveCount(0);
+		expect(schemaWarnings.length).toBeGreaterThan(0);
+		expect(schemaWarnings[0]).toContain('newer than the supported version');
+
+		await warnPage.close();
 	});
 });
 

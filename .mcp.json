@@ -1,5 +1,9 @@
 {
 	"mcpServers": {
+		"cinder": {
+			"command": "npx",
+			"args": ["--no-install", "cinder-mcp"]
+		},
 		"svelte": {
 			"type": "stdio",
 			"command": "npx",

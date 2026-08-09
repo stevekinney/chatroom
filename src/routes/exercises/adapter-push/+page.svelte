@@ -281,11 +281,7 @@
 			{error}
 		</p>
 	{/if}
-	<!-- Generous min-height: the typing indicator flex-collapses to zero
-	     height whenever the transcript overflows its viewport, so this keeps
-	     the short seeded transcript from overflowing while that's unfixed.
-	     upstream: stevekinney/cinder#910 -->
-	<div style="flex: 1; min-height: 32rem;">
+	<div style="flex: 1; min-height: 0;">
 		<Chat
 			id="adapter-push-chat"
 			{conversation}

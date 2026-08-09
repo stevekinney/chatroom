@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Bumps @lostgradient/cinder and @lostgradient/chat to their latest published
- * versions and re-verifies chatroom. Run after a Cinder/Chat release publishes.
+ * Bumps the upstream packages chatroom consumes — the @lostgradient workspace
+ * releases (cinder, chat, markdown) plus armorer from agent-bureau — to their
+ * latest published versions and re-verifies chatroom. Run after an upstream
+ * release publishes.
  *
  * chatroom consumes the published npm packages (not a bun link against
  * ../cinder), so "sync" means "pull the newest release from the registry",
@@ -9,7 +11,12 @@
  */
 import { $ } from 'bun';
 
-const packages = ['@lostgradient/cinder', '@lostgradient/chat'];
+const packages = [
+	'@lostgradient/cinder',
+	'@lostgradient/chat',
+	'@lostgradient/markdown',
+	'armorer'
+];
 const full = process.argv.includes('--full');
 
 function fail(message: string): never {

@@ -278,15 +278,11 @@ test.describe('adapter single-flight', () => {
 		await expect(countEl).toHaveText('1');
 	});
 
-	// FRICTION (pinned, not weakened): unlike sendMessage, Chat does NOT
-	// single-flight retryMessage — a rapid double-click invokes the adapter's
-	// retryMessage twice. Verified empirically (this test failed asserting
-	// '1' with an actual count of '2' before this assertion was corrected).
-	// Both invocations happen to converge on the same idempotent final
-	// content here, so nothing visibly corrupts, but the adapter genuinely
-	// runs its side effect twice per user click — a real gap for a
-	// non-idempotent retry (e.g. one that hits a billed API) to double-fire.
-	test('retryMessage: rapid double-click invokes the adapter twice (not single-flighted)', async ({
+	// retryMessage is single-flighted like sendMessage (cinder#897): a rapid
+	// double-click dispatches the adapter's retryMessage exactly once, so a
+	// non-idempotent retry (e.g. one that hits a billed API) can't
+	// double-fire from one user gesture.
+	test('retryMessage: rapid double-click is single-flighted; the adapter runs once', async ({
 		page
 	}) => {
 		const chat = page.locator(ADAPTER_CHAT_SELECTOR);
@@ -298,9 +294,7 @@ test.describe('adapter single-flight', () => {
 		await expect(chat.getByText('Failed to send', { exact: true })).toHaveCount(0, {
 			timeout: 5000
 		});
-		// Pins the missing re-entrancy guard: retryMessage double-fires where
-		// sendMessage stays single-flighted. upstream: stevekinney/cinder#897
-		await expect(countEl).toHaveText('2');
+		await expect(countEl).toHaveText('1');
 	});
 });
 

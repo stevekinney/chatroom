@@ -185,7 +185,7 @@
 			<ChatConversationList
 				conversations={summaries}
 				{activeConversationId}
-				onselectconversation={selectConversation}
+				onSelectConversation={selectConversation}
 			/>
 		</div>
 		<div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">

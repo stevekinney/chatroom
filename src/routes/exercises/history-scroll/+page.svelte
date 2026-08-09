@@ -77,7 +77,7 @@
 	let jumpThreshold = $state(DEFAULT_SCROLL_CONFIGURATION.jumpThreshold);
 
 	// Only consulted by `adapter.loadOlderMessages` — callback mode
-	// (`onloadhistory`) never sees these, since the adapter's method takes
+	// (`onLoadHistory`) never sees these, since the adapter's method takes
 	// precedence and callback mode omits it entirely (see the conditional
 	// spread on `adapter` below).
 	let failMode = $state(false);
@@ -129,7 +129,7 @@
 
 	// Only consulted by Chat when `mode === 'adapter'` — see the conditional
 	// spread below, which omits `loadOlderMessages` entirely in callback mode
-	// so `onloadhistory` (not the adapter) drives the history trigger.
+	// so `onLoadHistory` (not the adapter) drives the history trigger.
 	const adapter = $derived<ChatAdapter>({
 		sendMessage: async (message) => {
 			conversation = appendMessages(conversation, message);
@@ -228,7 +228,7 @@
 					onchange={() => resetMode('callback')}
 					data-testid="history-scroll-mode-callback"
 				/>
-				onloadhistory
+				onLoadHistory
 			</label>
 		</fieldset>
 
@@ -352,7 +352,7 @@
 			{moreHistoryAvailable}
 			loadEarlierLabel="Load earlier messages (custom)"
 			loadingEarlierLabel="Loading earlier messages (custom)"
-			onloadhistory={handleLoadHistory}
+			onLoadHistory={handleLoadHistory}
 			onadaptererror={handleAdapterError}
 			onscrollstatechange={handleScrollStateChange}
 			onunreadindicatorchange={handleUnreadIndicatorChange}

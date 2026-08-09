@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
-		appendMessages,
+		appendToolCall,
+		appendToolResult,
 		appendUserMessage,
 		Chat,
 		createConversation,
@@ -27,12 +28,6 @@
 	// by matching `toolResult.callId` to `toolCall.id` (`pairToolCallsWithResults`)
 	// and renders the approval prompt on the visible tool-CALL row with the
 	// result folded in — both messages are required, not just the result.
-	//
-	// `appendToolCall`/`appendToolResult` (conversationalist's purpose-built
-	// helpers) are NOT part of `@lostgradient/chat`'s re-export surface — only
-	// `appendMessages`/`appendUserMessage`/etc. are. Built with the re-exported
-	// `appendMessages` instead, passing `toolCall`/`toolResult` directly on the
-	// `MessageInput`. upstream: stevekinney/cinder#898
 	function seedWithPendingApproval(
 		id: string,
 		toolCallId: string,
@@ -41,24 +36,17 @@
 	): ConversationHistory {
 		let conversation = createConversation({ id });
 		conversation = appendUserMessage(conversation, `Please run ${toolName}.`);
-		conversation = appendMessages(
-			conversation,
-			{
-				role: 'tool-call',
-				content: '',
-				toolCall: { id: toolCallId, name: toolName, arguments: {} }
-			},
-			{
-				role: 'tool-result',
-				content: '',
-				toolResult: {
-					callId: toolCallId,
-					outcome: 'action_required',
-					content: null,
-					action: { type: 'approval', message }
-				}
-			}
-		);
+		conversation = appendToolCall(conversation, {
+			id: toolCallId,
+			name: toolName,
+			arguments: {}
+		});
+		conversation = appendToolResult(conversation, {
+			callId: toolCallId,
+			outcome: 'action_required',
+			content: null,
+			action: { type: 'approval', message }
+		});
 		return conversation;
 	}
 
@@ -68,39 +56,28 @@
 			conversation,
 			'Please send the digest and refund the invoice.'
 		);
-		conversation = appendMessages(
-			conversation,
-			{
-				role: 'tool-call',
-				content: '',
-				toolCall: { id: 'call-approve', name: 'send_email', arguments: {} }
-			},
-			{
-				role: 'tool-result',
-				content: '',
-				toolResult: {
-					callId: 'call-approve',
-					outcome: 'action_required',
-					content: null,
-					action: { type: 'approval', message: 'Send the weekly digest email?' }
-				}
-			},
-			{
-				role: 'tool-call',
-				content: '',
-				toolCall: { id: 'call-deny', name: 'issue_refund', arguments: {} }
-			},
-			{
-				role: 'tool-result',
-				content: '',
-				toolResult: {
-					callId: 'call-deny',
-					outcome: 'action_required',
-					content: null,
-					action: { type: 'approval', message: 'Issue a refund for order #4821?' }
-				}
-			}
-		);
+		conversation = appendToolCall(conversation, {
+			id: 'call-approve',
+			name: 'send_email',
+			arguments: {}
+		});
+		conversation = appendToolResult(conversation, {
+			callId: 'call-approve',
+			outcome: 'action_required',
+			content: null,
+			action: { type: 'approval', message: 'Send the weekly digest email?' }
+		});
+		conversation = appendToolCall(conversation, {
+			id: 'call-deny',
+			name: 'issue_refund',
+			arguments: {}
+		});
+		conversation = appendToolResult(conversation, {
+			callId: 'call-deny',
+			outcome: 'action_required',
+			content: null,
+			action: { type: 'approval', message: 'Issue a refund for order #4821?' }
+		});
 		return conversation;
 	}
 

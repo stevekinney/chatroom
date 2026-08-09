@@ -189,15 +189,11 @@
 		</span>
 	</div>
 	<div style="flex: 1; min-height: 0;">
-		<!-- Explicit top-start: the default bottom-start placement has no
-		     collision flip, so a viewport-bottom composer gets the menu opened
-		     over itself and clipped. upstream: stevekinney/cinder#888 -->
 		<ChatComposerPopover
 			id="composer-popover-exercise-commands"
 			items={commands}
 			filter={filterCommands}
-			onselect={handleSelect}
-			placement="top-start"
+			onSelect={handleSelect}
 		>
 			{#snippet composer(composerProps)}
 				<Chat
