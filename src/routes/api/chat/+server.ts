@@ -33,7 +33,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Invalid request body' }, { status: 400 });
 	}
 
-	const { system, messages } = toAnthropicMessagesForSdk(parsed.data.conversation);
+	// Mark the newest message as a prompt-cache boundary before conversion:
+	// conversationalist lowers it to a `cache_control` breakpoint on that
+	// message's last content block, so each turn caches the whole prompt
+	// prefix and the next turn's request reads it back instead of
+	// re-processing the entire transcript.
+	const conversation = parsed.data.conversation;
+	const lastId = conversation.ids.at(-1);
+	const lastMessage = lastId === undefined ? undefined : conversation.messages[lastId];
+	const withCacheBoundary =
+		lastId === undefined || lastMessage === undefined
+			? conversation
+			: {
+					...conversation,
+					messages: {
+						...conversation.messages,
+						[lastId]: { ...lastMessage, cacheBoundary: true }
+					}
+				};
+
+	const { system, messages } = toAnthropicMessagesForSdk(withCacheBoundary);
 
 	const anthropicStream = anthropic.messages.stream({
 		model: MODEL,
@@ -64,6 +83,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			anthropicStream.on('text', (text) => enqueueEvent({ type: 'text', text }));
 			anthropicStream.on('contentBlock', (block) => {
 				blocks.push(block);
+				// Surface each tool call the moment its block completes rather
+				// than after the whole message ends — the client renders the
+				// tool-call row while later blocks are still streaming.
+				for (const toolCall of parseAnthropicToolCalls([block])) {
+					enqueueEvent({ type: 'tool_call', ...toolCall });
+				}
 			});
 			anthropicStream.on('end', () => {
 				void (async () => {
@@ -71,10 +96,6 @@ export const POST: RequestHandler = async ({ request }) => {
 						const toolCalls = parseAnthropicToolCalls(blocks);
 
 						if (toolCalls.length > 0) {
-							for (const toolCall of toolCalls) {
-								enqueueEvent({ type: 'tool_call', ...toolCall });
-							}
-
 							const results = await toolbox.execute(toolCalls);
 
 							for (const result of results) {
