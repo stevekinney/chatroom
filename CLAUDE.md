@@ -64,9 +64,14 @@ component's own module imports its CSS (preserved by the package's `sideEffects`
 shipped.
 
 Conversation data flows through **`conversationalist`**, which chat now owns as a regular
-dependency and re-exports (types, builders, and helpers like `isJSONValue`) — as of
-`@lostgradient/chat@0.2.0` (cinder#753, fixed) chatroom no longer installs it directly. `zod`
-remains a direct dependency only because our armorer tool schemas use it, not for Chat. Build
+dependency and re-exports (types, builders, and helpers like `isJSONValue`) — client code
+should import those through `@lostgradient/chat`, not conversationalist directly. chatroom
+ALSO declares `conversationalist` as its own dependency (re-added 2026-08 after the cinder#753
+cleanup removed it): the API route imports `conversationalist/adapters/anthropic` and
+`conversationalist/schemas`, which chat does not re-export, and per chat's own guidance an app
+using conversationalist beyond the re-export surface keeps its own dependency rather than
+leaning on hoisting. Keep its version range aligned with chat's (`^0.5.0`). `zod` remains a
+direct dependency only because our armorer tool schemas use it, not for Chat. Build
 transcripts with the re-exported builders rather than hand-rolling `ConversationHistory`
 objects:
 

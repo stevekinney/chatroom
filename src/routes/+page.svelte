@@ -90,6 +90,9 @@
 	// Drop the message at `position` and everything after it. Used by edit:
 	// the superseded branch (old assistant reply, tool calls) is discarded
 	// before the edited content is re-sent as a fresh user message.
+	// Hand-rolled ids/messages surgery: conversationalist has no rewind
+	// helper (truncateFromPosition keeps the OPPOSITE tail).
+	// upstream: stevekinney/agent-bureau#306
 	function rewindBefore(history: ConversationHistory, position: number): ConversationHistory {
 		const keptIds = history.ids.filter((id) => {
 			const message = history.messages[id];
@@ -101,7 +104,9 @@
 
 	// Chat's failed-message affordances (the "Failed to send" label and Retry
 	// button) key off transient `_deliveryStatus` metadata that the CONSUMER
-	// owns — Chat never stamps it itself.
+	// must stamp — Chat routes a rejected sendMessage to `onadaptererror`
+	// but never marks the message failed itself, and the metadata key is
+	// undocumented. upstream: stevekinney/cinder#1240
 	function setDeliveryFailed(messageId: string, failed: boolean): void {
 		const message = conversation.messages[messageId];
 		if (!message) return;
