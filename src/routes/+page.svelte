@@ -5,6 +5,7 @@
 		appendStreamingMessage,
 		appendToolCall,
 		appendToolResult,
+		appendUserMessage,
 		cancelStreamingMessage,
 		createConversation,
 		finalizeStreamingMessage,
@@ -84,6 +85,51 @@
 	// the proxy through breaks their internal structuredClone.
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation);
+	}
+
+	// Drop the message at `position` and everything after it. Used by edit:
+	// the superseded branch (old assistant reply, tool calls) is discarded
+	// before the edited content is re-sent as a fresh user message.
+	function rewindBefore(history: ConversationHistory, position: number): ConversationHistory {
+		const keptIds = history.ids.filter((id) => {
+			const message = history.messages[id];
+			return message !== undefined && message.position < position;
+		});
+		const messages = Object.fromEntries(keptIds.map((id) => [id, history.messages[id]]));
+		return { ...history, ids: keptIds, messages, updatedAt: new Date().toISOString() };
+	}
+
+	// Chat's failed-message affordances (the "Failed to send" label and Retry
+	// button) key off transient `_deliveryStatus` metadata that the CONSUMER
+	// owns — Chat never stamps it itself.
+	function setDeliveryFailed(messageId: string, failed: boolean): void {
+		const message = conversation.messages[messageId];
+		if (!message) return;
+		const metadata: Record<string, (typeof message.metadata)[string]> = { ...message.metadata };
+		if (failed) {
+			metadata['_deliveryStatus'] = 'failed';
+		} else {
+			delete metadata['_deliveryStatus'];
+		}
+		conversation = {
+			...conversation,
+			messages: { ...conversation.messages, [messageId]: { ...message, metadata } }
+		};
+	}
+
+	// Run the assistant turn for the conversation as it stands, stamping
+	// `_deliveryStatus: 'failed'` on `userMessageId` if the turn throws so
+	// Chat surfaces its Retry affordance on that message.
+	async function runAssistantTurn(userMessageId: string): Promise<void> {
+		try {
+			await withStreamingIndicator(async () => {
+				turnCount = 0;
+				await runTurn();
+			});
+		} catch (cause) {
+			setDeliveryFailed(userMessageId, true);
+			throw cause;
+		}
 	}
 
 	async function withStreamingIndicator(run: () => Promise<void>): Promise<void> {
@@ -207,10 +253,27 @@
 		sendMessage: async (message) => {
 			error = null;
 			conversation = appendMessages(conversation, message);
-			await withStreamingIndicator(async () => {
-				turnCount = 0;
-				await runTurn();
-			});
+			const userMessageId = conversation.ids[conversation.ids.length - 1]!;
+			await runAssistantTurn(userMessageId);
+		},
+		// A failed send leaves the conversation ending at the user message
+		// (runTurn cancels its streaming placeholder on the way out), so a
+		// retry clears the failed mark and runs the assistant turn again.
+		retryMessage: async (messageId) => {
+			error = null;
+			setDeliveryFailed(messageId, false);
+			await runAssistantTurn(messageId);
+		},
+		editMessage: async ({ messageId, content }) => {
+			const edited = conversation.messages[messageId];
+			if (!edited) return;
+			error = null;
+			// Rewind to just before the edited message, then re-send it with
+			// the new content — everything after it (the old assistant reply,
+			// tool calls) belongs to the superseded branch.
+			conversation = appendUserMessage(rewindBefore(snapshot(), edited.position), content);
+			const userMessageId = conversation.ids[conversation.ids.length - 1]!;
+			await runAssistantTurn(userMessageId);
 		},
 		approveToolCall: async (toolCallId) => {
 			await withStreamingIndicator(async () => {
