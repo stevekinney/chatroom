@@ -277,7 +277,20 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
 	await expect(page.getByText(/^Live message 5 —/)).toBeVisible();
 
-	const boxBefore = await readAnchorTop();
+	// Settle the viewport before taking the "before" measurement: the
+	// programmatic scroll may still be gliding when the visibility check above
+	// resolves (`toBeVisible` doesn't require the element to be inside the
+	// viewport), so wait until the anchor's position holds still across
+	// consecutive reads.
+	let boxBefore = await readAnchorTop();
+	await expect
+		.poll(async () => {
+			const next = await readAnchorTop();
+			const stable = next !== null && boxBefore !== null && Math.abs(next - boxBefore) <= 0.5;
+			boxBefore = next;
+			return stable;
+		})
+		.toBe(true);
 	expect(boxBefore).not.toBeNull();
 
 	// `dispatchEvent('click')` rather than `.click()`: the load-earlier
@@ -291,13 +304,21 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 
 	// The real oracle is the anchored message's on-screen position — history
 	// anchoring means prepending older messages must not shift what is
-	// already visible. At scrollTop=0 the restore is broken and
-	// NONDETERMINISTIC: sometimes the anchor shifts by exactly the
-	// prepended block's height (~247px for these 4 rows), sometimes by a
-	// #911-style overshoot (~1790px measured). Pinned as "not stable"
-	// rather than an exact band; flip to `toBeLessThanOrEqual(3)` once
-	// fixed. upstream: stevekinney/cinder#1237
+	// already visible, even at scrollTop=0.
+	//
+	// REGRESSION (pinned, not weakened): chat 0.7.1's anchor restore removed
+	// the old full-prepend-height shift, but the terminal state is BIMODAL
+	// across runs: sometimes the async restore lands ~23px short (scrollTop
+	// 251 for a ~274px prepended block, then stable), and sometimes the
+	// viewport snaps to the transcript BOTTOM on prepend and never restores
+	// at all (~8000px from the anchor, still there after 5s). Even the good
+	// mode shows the bottom-snap transiently for 100ms+ before the restore.
+	// The fixed wait outlasts both terminal states; the assertion pins the
+	// invariant common to both: the anchor is never restored to within 3px.
+	// Flip to a `expect.poll(...).toBeLessThanOrEqual(3)` once fixed.
+	// upstream: stevekinney/cinder#1237
+	await page.waitForTimeout(2000);
 	const boxAfter = await readAnchorTop();
 	expect(boxAfter).not.toBeNull();
-	expect(Math.abs(boxAfter! - boxBefore!)).toBeGreaterThan(100);
+	expect(Math.abs(boxAfter! - boxBefore!)).toBeGreaterThan(3);
 });

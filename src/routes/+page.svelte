@@ -7,8 +7,10 @@
 		appendToolResult,
 		appendUserMessage,
 		cancelStreamingMessage,
+		clearMessageDeliveryStatus,
 		createConversation,
 		finalizeStreamingMessage,
+		markMessageDeliveryFailed,
 		isJSONValue,
 		updateStreamingMessage,
 		type ChatAdapter,
@@ -102,29 +104,9 @@
 		return { ...history, ids: keptIds, messages, updatedAt: new Date().toISOString() };
 	}
 
-	// Chat's failed-message affordances (the "Failed to send" label and Retry
-	// button) key off transient `_deliveryStatus` metadata that the CONSUMER
-	// must stamp — Chat routes a rejected sendMessage to `onadaptererror`
-	// but never marks the message failed itself, and the metadata key is
-	// undocumented. upstream: stevekinney/cinder#1240
-	function setDeliveryFailed(messageId: string, failed: boolean): void {
-		const message = conversation.messages[messageId];
-		if (!message) return;
-		const metadata: Record<string, (typeof message.metadata)[string]> = { ...message.metadata };
-		if (failed) {
-			metadata['_deliveryStatus'] = 'failed';
-		} else {
-			delete metadata['_deliveryStatus'];
-		}
-		conversation = {
-			...conversation,
-			messages: { ...conversation.messages, [messageId]: { ...message, metadata } }
-		};
-	}
-
-	// Run the assistant turn for the conversation as it stands, stamping
-	// `_deliveryStatus: 'failed'` on `userMessageId` if the turn throws so
-	// Chat surfaces its Retry affordance on that message.
+	// Run the assistant turn for the conversation as it stands, marking
+	// `userMessageId` failed-to-deliver if the turn throws so Chat surfaces
+	// its Retry affordance on that message.
 	async function runAssistantTurn(userMessageId: string): Promise<void> {
 		try {
 			await withStreamingIndicator(async () => {
@@ -132,7 +114,7 @@
 				await runTurn();
 			});
 		} catch (cause) {
-			setDeliveryFailed(userMessageId, true);
+			conversation = markMessageDeliveryFailed(snapshot(), userMessageId);
 			throw cause;
 		}
 	}
@@ -266,7 +248,7 @@
 		// retry clears the failed mark and runs the assistant turn again.
 		retryMessage: async (messageId) => {
 			error = null;
-			setDeliveryFailed(messageId, false);
+			conversation = clearMessageDeliveryStatus(snapshot(), messageId);
 			await runAssistantTurn(messageId);
 		},
 		editMessage: async ({ messageId, content }) => {

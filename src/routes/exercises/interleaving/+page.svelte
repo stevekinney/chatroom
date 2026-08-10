@@ -6,13 +6,14 @@
 		appendUserMessage,
 		cancelStreamingMessage,
 		Chat,
+		clearMessageDeliveryStatus,
 		createConversation,
 		finalizeStreamingMessage,
+		markMessageDeliveryFailed,
 		updateStreamingMessage,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
 		type ConversationHistory,
-		type JSONValue,
 		type Message
 	} from '@lostgradient/chat';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -39,12 +40,10 @@
 		conversation = appendUserMessage(conversation, "What's the weather like today?");
 		conversation = appendAssistantMessage(conversation, "It's sunny and 72 degrees.");
 		conversation = appendUserMessage(conversation, 'Summarize the quarterly report.');
-		conversation = appendAssistantMessage(conversation, 'This reply failed to send.', {
-			_deliveryStatus: 'failed'
-		});
+		conversation = appendAssistantMessage(conversation, 'This reply failed to send.');
 		const retryTargetId = conversation.ids[conversation.ids.length - 1];
 		if (!retryTargetId) throw new Error('Expected a seeded message id.');
-		return { conversation, retryTargetId };
+		return { conversation: markMessageDeliveryFailed(conversation, retryTargetId), retryTargetId };
 	}
 
 	function replaceMessage(
@@ -62,15 +61,12 @@
 		};
 	}
 
-	function metadataWithoutFailedFlag(metadata: Message['metadata']): Record<string, JSONValue> {
-		const next: Record<string, JSONValue> = { ...metadata };
-		delete next['_deliveryStatus'];
-		return next;
-	}
-
 	const seed = seedConversation('interleaving-demo');
 	let conversation = $state<ConversationHistory>(seed.conversation);
 	const retryTargetId = seed.retryTargetId;
+
+	// Plain `let`: only read via `chat?.retryMessage()` calls, never reactively.
+	let chat: ReturnType<typeof Chat> | undefined;
 
 	let log = $state<string[]>([]);
 	let error = $state<string | null>(null);
@@ -141,24 +137,18 @@
 			conversation = replaceMessage(conversation, event.messageId, { content: event.content });
 		},
 
-		// PINS ACTUAL CHAT BEHAVIOR: Chat's dispatcher has no re-entrancy guard
-		// on `retryMessage` (unlike tool-approval's commit-before-adapter-call
-		// guard) — nothing stops a consumer, or a second in-flight call, from
-		// invoking this twice for the same message id. The only guard here is
-		// UI-level and incidental: clearing `_deliveryStatus` up front unmounts
-		// the Retry button, so a SECOND click through the UI can't happen. A
-		// second PROGRAMMATIC dispatch (this exercise's "Force retry again"
-		// button) is NOT guarded — both loops run concurrently against the
-		// same message id.
+		// Chat's dispatcher single-flights `retryMessage` per message id: a
+		// second dispatch for an id whose retry is still in flight — whether a
+		// UI double-click or a programmatic `chat.retryMessage(id)` call (this
+		// exercise's "Force retry again" button) — is swallowed before it
+		// reaches this adapter command.
 		retryMessage: async (messageId) => {
 			log = [...log, `retryMessage:${messageId}`];
 			const target = conversation.messages[messageId];
 			if (!target) return;
 
 			clearStopRequest(messageId);
-			conversation = replaceMessage(conversation, messageId, {
-				metadata: metadataWithoutFailedFlag(target.metadata)
-			});
+			conversation = clearMessageDeliveryStatus(conversation, messageId);
 			activeStreamCount += 1;
 
 			try {
@@ -172,10 +162,7 @@
 					conversation = replaceMessage(conversation, messageId, { content: buffer });
 				}
 				if (stopRequestedIds.has(messageId) && buffer !== RETRY_TOKENS.join('')) {
-					const stopped = conversation.messages[messageId];
-					conversation = replaceMessage(conversation, messageId, {
-						metadata: { ...stopped?.metadata, _deliveryStatus: 'failed' }
-					});
+					conversation = markMessageDeliveryFailed(conversation, messageId);
 				}
 			} finally {
 				clearStopRequest(messageId);
@@ -194,7 +181,10 @@
 	}
 
 	function forceRetryAgain(): void {
-		void adapter.retryMessage?.(retryTargetId);
+		// Routed through the component instance (not `adapter.retryMessage`
+		// directly) so it hits Chat's dispatcher — the seam that single-flights
+		// concurrent retries of the same message id.
+		chat?.retryMessage(retryTargetId);
 	}
 </script>
 
@@ -213,6 +203,7 @@
 	<div style="flex: 1; min-height: 0; display: flex; gap: 0.75rem;">
 		<div style="flex: 2; min-height: 0; display: flex; flex-direction: column;">
 			<Chat
+				bind:this={chat}
 				id="interleaving-chat"
 				{conversation}
 				{adapter}

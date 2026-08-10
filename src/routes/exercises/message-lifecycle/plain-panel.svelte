@@ -2,16 +2,12 @@
 	import {
 		appendMessages,
 		Chat,
+		clearMessageDeliveryStatus,
 		type ChatStopGeneratingEvent,
 		type ChatSubmitEvent,
 		type ConversationHistory
 	} from '@lostgradient/chat';
-	import {
-		metadataWithoutFailedFlag,
-		replaceMessage,
-		seedConversation,
-		streamReply
-	} from './message-lifecycle-shared';
+	import { replaceMessage, seedConversation, streamReply } from './message-lifecycle-shared';
 
 	// Instance B: plain onsubmit / onretry / onedit / onstopgenerating — no
 	// `adapter` prop at all — proves Chat works purely off callback props.
@@ -49,10 +45,12 @@
 		const target = conversationB.messages[messageId];
 		if (!target) return;
 
-		conversationB = replaceMessage(conversationB, messageId, {
-			content: 'Retried via plain callback: the deterministic fact arrived on retry.',
-			metadata: metadataWithoutFailedFlag(target.metadata)
-		});
+		conversationB = clearMessageDeliveryStatus(
+			replaceMessage(conversationB, messageId, {
+				content: 'Retried via plain callback: the deterministic fact arrived on retry.'
+			}),
+			messageId
+		);
 	}
 
 	function handleEditB(event: { messageId: string; content: string }): void {

@@ -7,7 +7,7 @@
       "dependencies": {
         "@anthropic-ai/sdk": "^0.112.1",
         "@lasercat/homogenaize": "^1.2.41",
-        "@lostgradient/chat": "^0.7.0",
+        "@lostgradient/chat": "^0.7.1",
         "@lostgradient/cinder": "^0.22.0",
         "@lostgradient/markdown": "^0.2.0",
         "armorer": "^0.12.0",
@@ -94,7 +94,7 @@
 
     "@lasercat/homogenaize": ["@lasercat/homogenaize@1.2.41", "", { "dependencies": { "ajv": "^8.17.1", "openai": "^5.12.0" }, "peerDependencies": { "typescript": "^5.8.3" } }, "sha512-IN3/rhIHpcfcuxcI8jaNlkOuI5p03TZF01tI3VUGSgfG1sMce6RGfcb+GE1Eq5ZAZAXfh60IpySixE5KQvdK5Q=="],
 
-    "@lostgradient/chat": ["@lostgradient/chat@0.7.0", "", { "dependencies": { "conversationalist": "^0.5.0", "zod": "4.4.1" }, "peerDependencies": { "@lostgradient/cinder": "^0.22.0", "@lostgradient/markdown": "^0.2.0", "svelte": ">=5.56.0 <6" } }, "sha512-WNvVs7HXgDRgZbwFBNlugG1O3gO7qCJHvwWYpHJkCGPWfUaad2+scCtme8iD9D+AsZm9vzkzTzNg6adg8sUDhQ=="],
+    "@lostgradient/chat": ["@lostgradient/chat@0.7.1", "", { "dependencies": { "conversationalist": "^0.5.0", "zod": "4.4.1" }, "peerDependencies": { "@lostgradient/cinder": "^0.22.0", "@lostgradient/markdown": "^0.2.0", "svelte": ">=5.56.0 <6" } }, "sha512-9VSjcNIhtlA2wsfI/26AmRXZyD1mJe9lQvA0dPnG9v4A2sDAwwkzjSqnb9vCQXrG+jauSAJoH4PFElduK/czdw=="],
 
     "@lostgradient/cinder": ["@lostgradient/cinder@0.22.0", "", { "dependencies": { "@floating-ui/dom": "1.7.6", "@lostgradient/markdown": "^0.2.0", "@shikijs/engine-oniguruma": "^3.21.0", "@shikijs/types": "^3.21.0", "@tanstack/virtual-core": "^3.17.1", "ajv": "^8", "esm-env": "^1.2.0", "libphonenumber-js": "^1.13.3", "lucide-svelte": "0.503.0", "qrcode": "^1.5.4", "shiki": "^3.21.0" }, "peerDependencies": { "svelte": ">=5.56.0 <6" }, "bin": { "cinder": "dist/cli/index.js" } }, "sha512-N36SbfwkdX5fAccRJEiAuiw9QvrZ1CjdtJvXn+mUUFlji5UQBZmayYISsdQ1wl9+C8OxqINy1i84KfiKgkWpVQ=="],
 

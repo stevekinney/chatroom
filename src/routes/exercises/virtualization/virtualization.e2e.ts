@@ -54,18 +54,14 @@ test('scrollToTop and scrollToBottom navigate the virtualized transcript end to 
 	// without any scrolling.
 	await expect(page.getByText('Message 499')).toBeVisible();
 
-	// REGRESSION (pinned, not weakened): `chat.scrollToTop()` worked against
-	// chat 0.4.0 (cinder#774) but never leaves the bottom in 0.7.0 — the
-	// call triggers a virtualizer remeasurement and the stick-to-bottom
-	// effect immediately re-pins the viewport to the (re-measured) bottom,
-	// so the transcript start never renders. Exact scrollTop is unstable
-	// across runs (the remeasure shifts scrollHeight), so pin the
-	// user-visible symptom. Flip back to `Message 0` visible / `Message
-	// 499` hidden (and the scrollToBottom round-trip) once fixed.
-	// upstream: stevekinney/cinder#1236
+	// scrollToTop releases the stick-to-bottom pin and lands on the transcript
+	// start — the virtualizer renders the first window and prunes the bottom.
 	await page.getByTestId('virtualization-scroll-top').click();
-	// Give a real scroll every chance to happen before pinning the failure.
-	await page.waitForTimeout(1000);
+	await expect(page.getByText('Message 0')).toBeVisible();
+	await expect(page.getByText('Message 499')).not.toBeVisible();
+
+	// And the round-trip: scrollToBottom re-pins to the live edge.
+	await page.getByTestId('virtualization-scroll-bottom').click();
 	await expect(page.getByText('Message 499')).toBeVisible();
 	await expect(page.getByText('Message 0')).not.toBeVisible();
 });
@@ -101,9 +97,7 @@ test('streaming a new message into a virtualized transcript renders and finalize
 
 	// The streamed message is the new last message; scrolling to bottom still
 	// reaches it, proving the virtualizer's item count and keys were kept in
-	// sync with the growing transcript. (`scrollToTop` is not exercised here —
-	// see stevekinney/cinder#774, the auto-stick-to-bottom effect fights it
-	// under default motion settings.)
+	// sync with the growing transcript.
 	await page.getByTestId('virtualization-scroll-bottom').click();
 	await expect(page.getByText('Streamed reply into the virtualized transcript.')).toBeVisible();
 });

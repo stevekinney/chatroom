@@ -79,12 +79,12 @@ test.describe('interleaving: two concurrent retryMessage dispatches for the same
 		await page.close();
 	});
 
-	test('a second PROGRAMMATIC retryMessage for an in-flight id still dispatches; only the UI path is single-flighted', async () => {
-		// cinder#897's fix single-flights the UI retry path (rapid double-click
-		// dispatches once — covered in message-lifecycle.e2e.ts), but a direct
-		// `chat.retryMessage(id)` call while the first retry is still streaming
-		// is NOT guarded and double-dispatches the adapter command.
-		// upstream: stevekinney/cinder#1235
+	test('a second PROGRAMMATIC retryMessage for an in-flight id is single-flighted, same as the UI path', async () => {
+		// Chat's dispatcher single-flights retryMessage per message id: the UI
+		// path (rapid double-click — covered in message-lifecycle.e2e.ts) and a
+		// direct `chat.retryMessage(id)` call while the first retry is still
+		// streaming are both swallowed instead of double-dispatching the
+		// adapter command.
 		const chat = page.locator('#interleaving-chat');
 		const log = page.getByTestId('interleaving-log');
 		const messagesLog = chat.getByRole('log', { name: 'Messages' });
@@ -94,21 +94,20 @@ test.describe('interleaving: two concurrent retryMessage dispatches for the same
 
 		// Dispatch a SECOND retryMessage for the same message id while the
 		// first is still streaming — bypasses the UI (its Retry button already
-		// unmounted once the failed flag cleared), exercising the adapter path
-		// directly the way a racing consumer call would.
+		// unmounted once the failed flag cleared), exercising the programmatic
+		// path directly the way a racing consumer call would.
 		await page.getByTestId('force-retry-again').click();
 
 		const entries = await log.locator('li').allTextContents();
-		expect(entries.filter((entry) => entry.startsWith('retryMessage:'))).toHaveLength(2);
+		expect(entries.filter((entry) => entry.startsWith('retryMessage:'))).toHaveLength(1);
 
-		// Both loops reveal the SAME deterministic text, so regardless of which
-		// one's write lands last, the final content converges to the complete
-		// string — no duplicate row, no garbled partial content left behind.
+		// The single surviving loop reveals the full deterministic text — no
+		// duplicate row, no garbled partial content left behind.
 		await expect(messagesLog).toContainText(FULL_RETRY_TEXT);
 		const matchingRows = messageRow(chat, FULL_RETRY_TEXT);
 		await expect(matchingRows).toHaveCount(1);
 
-		// Clean terminal state once both overlapping streams finish.
+		// Clean terminal state once the surviving stream finishes.
 		await expect(chat.getByRole('button', { name: 'Send message' })).toBeVisible();
 		await expect(chat.getByText('Failed to send', { exact: true })).toHaveCount(0);
 	});

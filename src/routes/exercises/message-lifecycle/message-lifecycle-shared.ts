@@ -5,9 +5,9 @@ import {
 	cancelStreamingMessage,
 	createConversation,
 	finalizeStreamingMessage,
+	markMessageDeliveryFailed,
 	updateStreamingMessage,
 	type ConversationHistory,
-	type JSONValue,
 	type Message
 } from '@lostgradient/chat';
 
@@ -33,16 +33,15 @@ export function sleep(ms: number): Promise<void> {
 }
 
 // Seeds a conversation with one user message and one FAILED assistant
-// message (`_deliveryStatus: 'failed'` is the metadata flag `ChatMessage`
-// reads to show the "Failed to send" banner + retry button — see
-// `chat-message.svelte`'s `isFailed` derivation).
+// message — `markMessageDeliveryFailed` stamps the delivery-status metadata
+// `ChatMessage` reads to show the "Failed to send" banner + retry button.
 export function seedConversation(id: string): ConversationHistory {
 	let conversation = createConversation({ id });
 	conversation = appendUserMessage(conversation, 'What is the capital of deterministic testing?');
-	conversation = appendAssistantMessage(conversation, 'This reply failed to send.', {
-		_deliveryStatus: 'failed'
-	});
-	return conversation;
+	conversation = appendAssistantMessage(conversation, 'This reply failed to send.');
+	const failedId = conversation.ids[conversation.ids.length - 1];
+	if (!failedId) throw new Error('Expected a seeded message id.');
+	return markMessageDeliveryFailed(conversation, failedId);
 }
 
 export function replaceMessage(
@@ -58,14 +57,6 @@ export function replaceMessage(
 		messages: { ...history.messages, [messageId]: { ...existing, ...updates } },
 		updatedAt: new Date().toISOString()
 	};
-}
-
-export function metadataWithoutFailedFlag(
-	metadata: Message['metadata']
-): Record<string, JSONValue> {
-	const next: Record<string, JSONValue> = { ...metadata };
-	delete next['_deliveryStatus'];
-	return next;
 }
 
 export type StreamCallbacks = {

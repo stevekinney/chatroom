@@ -3,20 +3,21 @@
 		appendAssistantMessage,
 		appendUserMessage,
 		Chat,
+		clearMessageDeliveryStatus,
 		createConversation,
+		markMessageDeliveryFailed,
 		type ChatCapabilities,
 		type ChatSubmitEvent,
 		type ConversationHistory,
-		type JSONValue,
 		type Message
 	} from '@lostgradient/chat';
 
 	// Seeds a transcript that exercises every capability at once: a user
 	// message (editable), a completed assistant reply (copyable, and sharing
 	// "deterministic" with the failed message below so search has two matches
-	// to navigate between), and a FAILED assistant message (retryable). See
-	// message-lifecycle/+page.svelte for the `_deliveryStatus: 'failed'`
-	// metadata flag `ChatMessage` reads to show the retry affordance.
+	// to navigate between), and a FAILED assistant message (retryable —
+	// `markMessageDeliveryFailed` stamps the delivery-status metadata
+	// `ChatMessage` reads to show the retry affordance).
 	function seedConversation(id: string): ConversationHistory {
 		let conversation = createConversation({ id });
 		conversation = appendUserMessage(conversation, 'What is a deterministic chat exercise?');
@@ -24,10 +25,10 @@
 			conversation,
 			'A deterministic exercise never calls the network — every reply is scripted in-page.'
 		);
-		conversation = appendAssistantMessage(conversation, 'This reply failed to send.', {
-			_deliveryStatus: 'failed'
-		});
-		return conversation;
+		conversation = appendAssistantMessage(conversation, 'This reply failed to send.');
+		const failedId = conversation.ids[conversation.ids.length - 1];
+		if (!failedId) throw new Error('Expected a seeded message id.');
+		return markMessageDeliveryFailed(conversation, failedId);
 	}
 
 	function replaceMessage(
@@ -43,12 +44,6 @@
 			messages: { ...history.messages, [messageId]: { ...existing, ...updates } },
 			updatedAt: new Date().toISOString()
 		};
-	}
-
-	function metadataWithoutFailedFlag(metadata: Message['metadata']): Record<string, JSONValue> {
-		const next: Record<string, JSONValue> = { ...metadata };
-		delete next['_deliveryStatus'];
-		return next;
 	}
 
 	let conversation = $state<ConversationHistory>(seedConversation('presentation-exercise'));
@@ -84,10 +79,10 @@
 		const target = conversation.messages[messageId];
 		if (!target) return;
 
-		conversation = replaceMessage(conversation, messageId, {
-			content: 'Retried reply: arrived on retry.',
-			metadata: metadataWithoutFailedFlag(target.metadata)
-		});
+		conversation = clearMessageDeliveryStatus(
+			replaceMessage(conversation, messageId, { content: 'Retried reply: arrived on retry.' }),
+			messageId
+		);
 	}
 
 	function handleEdit(event: { messageId: string; content: string }): void {

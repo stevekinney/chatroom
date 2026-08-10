@@ -2,17 +2,13 @@
 	import {
 		appendMessages,
 		Chat,
+		clearMessageDeliveryStatus,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
 		type ConversationHistory,
 		type MessageInput
 	} from '@lostgradient/chat';
-	import {
-		metadataWithoutFailedFlag,
-		replaceMessage,
-		seedConversation,
-		streamReply
-	} from './message-lifecycle-shared';
+	import { replaceMessage, seedConversation, streamReply } from './message-lifecycle-shared';
 
 	// Instance A: driven entirely through a `ChatAdapter`. Beyond the plain
 	// retry/edit/stop-generating coverage the sibling plain-panel also exercises,
@@ -90,10 +86,12 @@
 		if (!target) return;
 
 		logEntry(`retryMessage:${messageId}`);
-		conversationA = replaceMessage(conversationA, messageId, {
-			content: 'Retried reply: the deterministic fact arrived on retry.',
-			metadata: metadataWithoutFailedFlag(target.metadata)
-		});
+		conversationA = clearMessageDeliveryStatus(
+			replaceMessage(conversationA, messageId, {
+				content: 'Retried reply: the deterministic fact arrived on retry.'
+			}),
+			messageId
+		);
 	}
 
 	async function performEditA(event: { messageId: string; content: string }): Promise<void> {
