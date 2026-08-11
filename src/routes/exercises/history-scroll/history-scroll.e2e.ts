@@ -380,6 +380,9 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 	// does not have — Cinder's own harness asserts painted frames and passes. What
 	// is unambiguous, and what this pins, is that nothing is left displaced: any
 	// excursion is confined to the frames right after the prepend.
+	//
+	// Whether those two frames are actually painted is an open question with
+	// Cinder. upstream: stevekinney/cinder#1259
 	const SETTLED_FROM = 20;
 	expect(frames.length).toBeGreaterThan(SETTLED_FROM + 10);
 	const settledFrames = frames.slice(SETTLED_FROM);
