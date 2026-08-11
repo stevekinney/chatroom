@@ -250,23 +250,48 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 }) => {
 	await gotoHydrated(page, '/exercises/history-scroll');
 
-	// A distinctive message near the top of the initially-loaded transcript,
-	// close enough to the load-earlier trigger to stay in view. Read its
-	// vertical position directly via `getBoundingClientRect()` rather than
-	// Playwright's locator-based `scrollIntoViewIfNeeded`/`boundingBox`:
-	// Chat's own scroll-tracking keeps producing `scrollstatechange` events
-	// (and this page logs each one into a growing/sliding `eventLog` list)
-	// while the transcript settles, which made Playwright's element-stability
-	// check for the anchor message flaky ("Element is not attached to the
-	// DOM") even though the element itself never actually unmounts. A single
-	// `page.evaluate` sidesteps that stability polling entirely.
-	function readAnchorTop(): Promise<number | null> {
-		return page.evaluate(() => {
+	// The anchor's position is measured RELATIVE TO THE TIMELINE's own box, not
+	// to the page. History anchoring is a promise about the scroll container's
+	// contents, and this exercise page shifts the whole chat down the page by a
+	// line (~23px) when a load completes and the event log grows — a page-
+	// relative reading counts that as anchor drift and reports a Chat bug that
+	// is really this page's layout. Both rects move together, so the relative
+	// reading is immune.
+	//
+	// Read via `page.evaluate` rather than Playwright's locator-based
+	// `boundingBox`: Chat's scroll-tracking keeps producing `scrollstatechange`
+	// events (each logged into a growing/sliding `eventLog`) while the transcript
+	// settles, which made the locator's element-stability check flaky ("Element
+	// is not attached to the DOM") even though the anchor never unmounts.
+	const ANCHOR_PREFIX = 'Live message 5 —';
+
+	// Settle by requiring `scrollTop` to hold across consecutive ANIMATION
+	// FRAMES. Two `page.evaluate` reads in quick succession can both land inside
+	// a single frame and report a gliding scroll as "stable" — this exercise's
+	// programmatic scroll-to-top takes ~1.35s to finish, so that mistake yields a
+	// baseline captured mid-glide, thousands of pixels from the settled position.
+	function settleAndReadAnchor(): Promise<{ relative: number; scrollTop: number } | null> {
+		return page.evaluate(async (prefix) => {
+			const timeline = document.querySelector('.chat-timeline');
+			if (!timeline) return null;
+			const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+			let stableFrames = 0;
+			let last = timeline.scrollTop;
+			const start = performance.now();
+			while (stableFrames < 10 && performance.now() - start < 8000) {
+				await frame();
+				stableFrames = timeline.scrollTop === last ? stableFrames + 1 : 0;
+				last = timeline.scrollTop;
+			}
 			const target = Array.from(document.querySelectorAll('.chat-message-body')).find((element) =>
-				element.textContent?.trimStart().startsWith('Live message 5 —')
+				element.textContent?.trimStart().startsWith(prefix)
 			);
-			return target ? target.getBoundingClientRect().top : null;
-		});
+			if (!target) return null;
+			return {
+				relative: target.getBoundingClientRect().top - timeline.getBoundingClientRect().top,
+				scrollTop: timeline.scrollTop
+			};
+		}, ANCHOR_PREFIX);
 	}
 
 	// Chat starts pinned to the bottom (SEED_COUNT=60). A programmatic
@@ -277,21 +302,42 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 	await expect(page.getByTestId('history-scroll-at-bottom')).toHaveText('false');
 	await expect(page.getByText(/^Live message 5 —/)).toBeVisible();
 
-	// Settle the viewport before taking the "before" measurement: the
-	// programmatic scroll may still be gliding when the visibility check above
-	// resolves (`toBeVisible` doesn't require the element to be inside the
-	// viewport), so wait until the anchor's position holds still across
-	// consecutive reads.
-	let boxBefore = await readAnchorTop();
-	await expect
-		.poll(async () => {
-			const next = await readAnchorTop();
-			const stable = next !== null && boxBefore !== null && Math.abs(next - boxBefore) <= 0.5;
-			boxBefore = next;
-			return stable;
-		})
-		.toBe(true);
-	expect(boxBefore).not.toBeNull();
+	const before = await settleAndReadAnchor();
+	expect(before).not.toBeNull();
+	// Proof the baseline really is the settled top, not a mid-glide sample.
+	expect(before!.scrollTop).toBe(0);
+
+	// Sample the anchor EVERY FRAME from before the prepend until well after it.
+	// A terminal-state-only check cannot see a transient mis-anchored frame, and
+	// a transient one is exactly what a user perceives as a flash. The sampler
+	// runs for a fixed WALL-CLOCK window and resolves a promise when it stops, so
+	// it never outlives the measurement and burns frames under the later awaits —
+	// and so the assertions below never depend on achieving a particular frame
+	// rate, which CPU contention can starve.
+	await page.evaluate((prefix) => {
+		const timeline = document.querySelector('.chat-timeline');
+		if (!timeline) return;
+		const samples: number[] = [];
+		const scope = window as unknown as {
+			__anchorSamples: number[];
+			__anchorSamplingDone: Promise<void>;
+		};
+		scope.__anchorSamples = samples;
+		scope.__anchorSamplingDone = new Promise<void>((resolve) => {
+			const start = performance.now();
+			const tick = () => {
+				const target = Array.from(document.querySelectorAll('.chat-message-body')).find((element) =>
+					element.textContent?.trimStart().startsWith(prefix)
+				);
+				if (target) {
+					samples.push(target.getBoundingClientRect().top - timeline.getBoundingClientRect().top);
+				}
+				if (performance.now() - start < 1500) requestAnimationFrame(tick);
+				else resolve();
+			};
+			requestAnimationFrame(tick);
+		});
+	}, ANCHOR_PREFIX);
 
 	// `dispatchEvent('click')` rather than `.click()`: the load-earlier
 	// trigger sits above the anchor message, offscreen once the anchor is in
@@ -302,23 +348,31 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 	await page.getByRole('button', { name: 'Load earlier messages (custom)' }).dispatchEvent('click');
 	await expect(page.getByTestId('history-scroll-message-count')).toHaveText('64');
 
-	// The real oracle is the anchored message's on-screen position — history
-	// anchoring means prepending older messages must not shift what is
-	// already visible, even at scrollTop=0.
-	//
-	// REGRESSION (pinned, not weakened): chat 0.7.1's anchor restore removed
-	// the old full-prepend-height shift, but the terminal state is BIMODAL
-	// across runs: sometimes the async restore lands ~23px short (scrollTop
-	// 251 for a ~274px prepended block, then stable), and sometimes the
-	// viewport snaps to the transcript BOTTOM on prepend and never restores
-	// at all (~8000px from the anchor, still there after 5s). Even the good
-	// mode shows the bottom-snap transiently for 100ms+ before the restore.
-	// The fixed wait outlasts both terminal states; the assertion pins the
-	// invariant common to both: the anchor is never restored to within 3px.
-	// Flip to a `expect.poll(...).toBeLessThanOrEqual(3)` once fixed.
-	// upstream: stevekinney/cinder#1237
-	await page.waitForTimeout(2000);
-	const boxAfter = await readAnchorTop();
-	expect(boxAfter).not.toBeNull();
-	expect(Math.abs(boxAfter! - boxBefore!)).toBeGreaterThan(3);
+	const frames = await page.evaluate(async () => {
+		const scope = window as unknown as {
+			__anchorSamples: number[];
+			__anchorSamplingDone: Promise<void>;
+		};
+		await scope.__anchorSamplingDone;
+		return scope.__anchorSamples;
+	});
+	// Enough coverage to be meaningful, but low enough that a starved frame rate
+	// is not itself a failure — the flash spans whole frames, so a slow sampler
+	// still lands inside it.
+	expect(frames.length).toBeGreaterThan(10);
+
+	// The settled state is exact: prepending older messages leaves the anchored
+	// message where it was, to the pixel.
+	const after = await settleAndReadAnchor();
+	expect(after).not.toBeNull();
+	expect(Math.abs(after!.relative - before!.relative)).toBeLessThanOrEqual(3);
+
+	// REGRESSION (pinned, not weakened): the SETTLED position is correct, but the
+	// restore lands a frame late, so the browser paints the un-compensated
+	// transcript first — measured here as 2 frames displaced by ~1312px,
+	// deterministic across runs. That is the user-visible flash. Flip this to
+	// `expect(offAnchorFrames).toHaveLength(0)` once the restore is applied in
+	// the same flush as the prepend. upstream: stevekinney/cinder#1237
+	const offAnchorFrames = frames.filter((value) => Math.abs(value - before!.relative) > 3);
+	expect(offAnchorFrames.length).toBeGreaterThan(0);
 });
