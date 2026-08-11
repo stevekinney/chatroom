@@ -15,7 +15,8 @@
 		"test:e2e": "playwright install && playwright test",
 		"test": "bun run test:e2e",
 		"sync:cinder": "bun scripts/sync-cinder.ts",
-		"check:upstream": "bun scripts/check-upstream-issues.ts"
+		"check:upstream": "bun scripts/check-upstream-issues.ts",
+		"check:peers": "bun scripts/check-peer-alignment.ts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

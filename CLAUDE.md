@@ -70,7 +70,9 @@ ALSO declares `conversationalist` as its own dependency (re-added 2026-08 after 
 cleanup removed it): the API route imports `conversationalist/adapters/anthropic` and
 `conversationalist/schemas`, which chat does not re-export, and per chat's own guidance an app
 using conversationalist beyond the re-export surface keeps its own dependency rather than
-leaning on hoisting. Keep its version range aligned with chat's (`^0.5.0`). `zod` remains a
+leaning on hoisting. Its range must stay **identical** to the range chat declares, so both resolve
+the same instance — `bun run check:peers` enforces that, and the sync runs it, so a release that
+moves chat's floor fails here until our range follows. `zod` remains a
 direct dependency only because our armorer tool schemas use it, not for Chat. Build
 transcripts with the re-exported builders rather than hand-rolling `ConversationHistory`
 objects:
@@ -141,8 +143,8 @@ agent-bureau loop is the same shape, just without a `sync:*` script yet — sync
    not reach here.
 4. **Sync**, from `chatroom` — run `bun run sync:cinder` (or invoke the `sync-cinder` skill).
    It bumps both `@lostgradient/*` packages to their latest published versions
-   (`bun update … --latest`) and re-runs `lint` + `check` + `check:upstream` here (pass
-   `--full` to also run `test:e2e`). It stops — rather than reporting success — if anything
+   (`bun update … --latest`) and re-runs `lint` + `check` + `check:upstream` + `check:peers` here
+   (pass `--full` to also run `test:e2e`). It stops — rather than reporting success — if anything
    fails after the bump, since a red check right after a sync means a new release broke
    something here.
 5. **Clean up**, in the same session the sync happens. `check:upstream` failing means a
@@ -174,6 +176,8 @@ an unresolved bug, no matter what the last comment on it says.
 bun run dev              # dev server
 bun run sync:cinder      # bump @lostgradient/cinder + @lostgradient/chat to latest, re-verify
 bun run check             # svelte-kit sync + svelte-check
+bun run check:upstream    # every `upstream:` marker's issue is still open
+bun run check:peers       # re-declared deps still match their owning package's range
 bun run lint              # prettier --check + eslint
 bun run format             # prettier --write
 bun run test:e2e           # playwright

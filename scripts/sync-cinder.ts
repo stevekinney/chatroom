@@ -62,7 +62,10 @@ const checks: { name: string; run: () => Promise<{ exitCode: number }> }[] = [
 	// A new release is exactly when `upstream:` workaround markers go stale —
 	// fail the sync until each closed-issue workaround is removed (or its issue
 	// reopened, if the problem still reproduces).
-	{ name: 'check:upstream', run: () => $`bun run check:upstream`.nothrow() }
+	{ name: 'check:upstream', run: () => $`bun run check:upstream`.nothrow() },
+	// A new release is also exactly when a dependency we re-declare drifts from
+	// the range its owning package moved to.
+	{ name: 'check:peers', run: () => $`bun run check:peers`.nothrow() }
 ];
 
 if (full) {
