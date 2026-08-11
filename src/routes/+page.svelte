@@ -12,6 +12,7 @@
 		finalizeStreamingMessage,
 		markMessageDeliveryFailed,
 		isJSONValue,
+		rewindBeforeMessage,
 		updateStreamingMessage,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
@@ -87,21 +88,6 @@
 	// the proxy through breaks their internal structuredClone.
 	function snapshot(): ConversationHistory {
 		return $state.snapshot(conversation);
-	}
-
-	// Drop the message at `position` and everything after it. Used by edit:
-	// the superseded branch (old assistant reply, tool calls) is discarded
-	// before the edited content is re-sent as a fresh user message.
-	// Hand-rolled ids/messages surgery: conversationalist has no rewind
-	// helper (truncateFromPosition keeps the OPPOSITE tail).
-	// upstream: stevekinney/agent-bureau#306
-	function rewindBefore(history: ConversationHistory, position: number): ConversationHistory {
-		const keptIds = history.ids.filter((id) => {
-			const message = history.messages[id];
-			return message !== undefined && message.position < position;
-		});
-		const messages = Object.fromEntries(keptIds.map((id) => [id, history.messages[id]]));
-		return { ...history, ids: keptIds, messages, updatedAt: new Date().toISOString() };
 	}
 
 	// Run the assistant turn for the conversation as it stands, marking
@@ -252,13 +238,14 @@
 			await runAssistantTurn(messageId);
 		},
 		editMessage: async ({ messageId, content }) => {
-			const edited = conversation.messages[messageId];
-			if (!edited) return;
 			error = null;
-			// Rewind to just before the edited message, then re-send it with
-			// the new content — everything after it (the old assistant reply,
-			// tool calls) belongs to the superseded branch.
-			conversation = appendUserMessage(rewindBefore(snapshot(), edited.position), content);
+			// Rewind to just before the edited message, then re-send it with the
+			// new content — everything after it (the old assistant reply, tool
+			// calls) belongs to the superseded branch. `rewindBeforeMessage` keeps
+			// a straddling tool-call/tool-result pair atomic and renumbers
+			// positions; an unknown id is a no-op, so the guard the hand-rolled
+			// version needed is built in.
+			conversation = appendUserMessage(rewindBeforeMessage(snapshot(), messageId), content);
 			const userMessageId = conversation.ids[conversation.ids.length - 1]!;
 			await runAssistantTurn(userMessageId);
 		},

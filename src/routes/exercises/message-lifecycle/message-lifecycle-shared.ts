@@ -72,14 +72,15 @@ export type StreamCallbacks = {
 // tokens so `stopGenerating`/`onstopgenerating` can halt the stream early —
 // the assertion a real backend abort would need to satisfy.
 //
-// After an early stop, it also simulates a backend race: a token arriving
-// just after the stream already finalized/cancelled. `updateStreamingMessage`
-// (from `conversationalist`) does NOT itself check whether a message is still
-// streaming — it clones the message by id regardless of the streaming flag —
-// so a caller that reapplied it here unguarded would silently grow a message
-// the user already stopped. This guards on `shouldStop()` itself rather than
-// trusting the library, and logs which branch ran so a test can assert the
-// transcript stayed frozen. upstream: stevekinney/agent-bureau#296
+// After an early stop it simulates the race a real transport has: a token
+// arriving just after the stream already finalized or cancelled. The late token
+// is applied UNGUARDED on purpose. Since conversationalist 0.6,
+// `updateStreamingMessage` enforces the guard at the library boundary — it
+// returns the conversation untouched when the target is no longer flagged as
+// streaming, exactly as it already did for an unknown id — so this exercise
+// asserts that guarantee rather than re-implementing it in every consumer.
+// (`updateUnsafeStreamingMessage` is the documented escape hatch for
+// render-side projections that deliberately write to a finalized message.)
 export async function streamReply(callbacks: StreamCallbacks): Promise<void> {
 	const { conversation: withPlaceholder, messageId } = appendStreamingMessage(
 		callbacks.getSnapshot(),
@@ -116,18 +117,18 @@ export async function streamReply(callbacks: StreamCallbacks): Promise<void> {
 		if (stoppedEarly) {
 			await sleep(STREAM_DELAY_MS);
 
-			if (callbacks.shouldStop()) {
-				callbacks.log('post-stop-token:blocked');
-			} else {
-				callbacks.setConversation(
-					updateStreamingMessage(
-						callbacks.getSnapshot(),
-						messageId,
-						`${buffer}${LATE_TOKEN_MARKER}`
-					)
-				);
-				callbacks.log('post-stop-token:applied');
-			}
+			const afterLateToken = updateStreamingMessage(
+				callbacks.getSnapshot(),
+				messageId,
+				`${buffer}${LATE_TOKEN_MARKER}`
+			);
+			callbacks.setConversation(afterLateToken);
+
+			// Read the transcript back rather than trusting the call's return
+			// identity: the point of the log entry is what a reader would SEE.
+			const content = afterLateToken.messages[messageId]?.content;
+			const applied = typeof content === 'string' && content.includes(LATE_TOKEN_MARKER);
+			callbacks.log(applied ? 'post-stop-token:applied' : 'post-stop-token:blocked');
 		}
 	} finally {
 		callbacks.setStreaming(false);
