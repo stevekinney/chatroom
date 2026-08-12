@@ -20,25 +20,21 @@ const DEV_ORIGIN = 'http://localhost:5175';
 // here against `@lostgradient/cinder@0.24.1` / `@lostgradient/chat@0.9.1`: all
 // three Chat routes now report zero, as does a page containing nothing but a
 // Cinder icon, which is where that one was localized.
+// The ReviewEditor routes joined this list once cinder#1277 shipped. That one
+// was NOT the LiveRegion or the empty `{#if name}` block it looked like: the
+// editor package listed `node` before `svelte` in its conditional exports, so
+// SvelteKit SSR loaded the precompiled `dist/server` bundle while the browser
+// compiled the same components from source — two independent compilations of
+// one page, disagreeing on hydration anchor comments. Exactly what cinder#1261
+// fixed for chat and cinder; editor was missed by that sweep.
 const HYDRATING_ROUTES = [
 	'/',
 	'/exercises',
 	'/exercises/presentation',
-	'/exercises/history-scroll'
+	'/exercises/history-scroll',
+	'/exercises/review-basics',
+	'/exercises/review-views'
 ];
-
-// ReviewEditor still emits one, for a DIFFERENT reason than the Chat issue —
-// bisected on the same dev server, same run: a bare `MarkdownEditor` is clean
-// and a bare `ReviewEditor` is not, so it is ReviewEditor's own shell rather
-// than the inner editor or the shared icons. SSR emits keyed block markers
-// (`<!--[0-->…<!--]-->`, `<!--[-1--><!--]-->`) around the LiveRegion and the
-// empty `{#if name}` hidden-input block where the client renders plain anchors.
-//
-// Pinned at exactly one, not weakened to "at most one": if it becomes two, that
-// is a new divergence worth knowing about, and if it becomes zero this test
-// fails and the route moves up into HYDRATING_ROUTES.
-// upstream: stevekinney/cinder#1277
-const REVIEW_EDITOR_ROUTES = ['/exercises/review-basics', '/exercises/review-views'];
 
 async function collectHydrationMismatches(
 	page: import('@playwright/test').Page,
@@ -62,11 +58,5 @@ async function collectHydrationMismatches(
 for (const route of HYDRATING_ROUTES) {
 	test(`${route} hydrates without a mismatch`, async ({ page }) => {
 		expect(await collectHydrationMismatches(page, route)).toHaveLength(0);
-	});
-}
-
-for (const route of REVIEW_EDITOR_ROUTES) {
-	test(`ReviewEditor route ${route} emits the known hydration mismatch`, async ({ page }) => {
-		expect(await collectHydrationMismatches(page, route)).toHaveLength(1);
 	});
 }

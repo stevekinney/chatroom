@@ -118,24 +118,32 @@ test.describe.serial('review-state-and-session: imperative state round-trip', ()
 	});
 
 	test('the persisted anchor drops from/to, and drops blockId/originalPosition only once serialized', async () => {
-		// getState() names eight anchor fields explicitly, `blockId` and
+		// getState() names nine anchor fields explicitly, `blockId` and
 		// `originalPosition` included even when undefined — so they are present
 		// as keys in memory and vanish only when JSON.stringify discards
 		// undefined-valued properties. `from`/`to` are absent in BOTH: runtime
 		// positions are never persisted, which is what forces a restore to
 		// recover position from the quote.
+		//
+		// `type` joined the in-memory list in cinder#1274 and behaves like
+		// `blockId`/`originalPosition`: named explicitly, `undefined` for a text
+		// anchor, and therefore dropped by JSON.stringify. getState() used to omit
+		// it entirely, so anything persisted before that release cannot
+		// distinguish a document-level anchor from a text one — which is why
+		// `isDocumentAnchor` now also treats a quote-less anchor with no `type` as
+		// document-level.
 		await expect(page.getByTestId('state-anchor-keys')).toHaveText(
-			'anchor keys: blockId,lastKnownOffset,originalPosition,originalQuote,prefix,quote,status,suffix'
+			'anchor keys: blockId,lastKnownOffset,originalPosition,originalQuote,prefix,quote,status,suffix,type'
 		);
 		await expect(page.getByTestId('state-json-anchor-keys')).toHaveText(
 			'anchor keys after JSON: lastKnownOffset,originalQuote,prefix,quote,status,suffix'
 		);
 
 		// `toPersistedThreads` is the same projection, exported for callers doing
-		// their own persistence — same eight keys, same missing positions.
+		// their own persistence — same nine keys, same missing positions.
 		await page.getByTestId('probe-to-persisted-threads').click();
 		await expect(page.getByTestId('to-persisted-anchor-keys')).toHaveText(
-			'toPersistedThreads anchor keys: blockId,lastKnownOffset,originalPosition,originalQuote,prefix,quote,status,suffix'
+			'toPersistedThreads anchor keys: blockId,lastKnownOffset,originalPosition,originalQuote,prefix,quote,status,suffix,type'
 		);
 	});
 

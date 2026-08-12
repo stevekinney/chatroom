@@ -171,49 +171,37 @@ test.describe('review-anchoring: repairing a mis-seeded anchor', () => {
 			});
 	});
 
-	test('PINNED KNOWN BUG: an off-by-one anchor in a HEADING is corrupted instead of repaired', async ({
-		page
-	}) => {
-		// Same mistake, same document, one block up: {from: 2, to: 14} instead of
-		// {from: 1, to: 13}. The paragraph anchor above is repaired; this one
-		// never is. It highlights "elease Plan" — text nobody asked to annotate —
-		// and stays that way.
+	test('an off-by-one anchor in a HEADING is repaired too, not corrupted', async ({ page }) => {
+		// Same mistake as the paragraph above, one block up: {from: 2, to: 14}
+		// instead of {from: 1, to: 13}. This case used to be permanent, and the
+		// asymmetry with the paragraph is what gave the mechanism away.
 		//
-		// The mechanism is a race the fix does not cover. Marking an anchor for
-		// re-anchoring only schedules work 300ms out. If ANY document transaction
-		// that overlaps the (wrong) stored range lands first, the plugin takes
-		// its "the edit was inside this anchor" branch and rewrites its own copy
-		// of `quote` to whatever text now sits at the stored range. From that
-		// moment the anchor is internally self-consistent, the deferred pass's
-		// `textBetween(from, to) === quote` check passes, and re-anchoring never
-		// runs. The wrong range is now permanent.
-		//
-		// Headings get such a transaction for free: Milkdown assigns every
+		// Marking an anchor for re-anchoring only schedules work 300ms out. Any
+		// transaction overlapping the WRONG stored range that lands first used to
+		// take the plugin's "the edit was inside this anchor" branch, which
+		// rewrote its copy of `quote` to whatever text sat at that range. The
+		// anchor then looked internally consistent, the deferred pass's
+		// `textBetween(from, to) === quote` check passed, and re-anchoring never
+		// ran. Headings get such a transaction for free — Milkdown assigns every
 		// heading a slug `id` via `setNodeMarkup`, whose step spans the whole
-		// heading node. Paragraphs get no equivalent, which is exactly why the
-		// two anchors on this instance end up in different states.
+		// node — and paragraphs get no equivalent. Hence one repaired and one not.
+		//
+		// cinder#1275 gates that branch on the anchor having verifiably described
+		// its own text BEFORE the transaction, so an anchor that never checked out
+		// keeps its quote and is relocated by search instead.
 		const headingAnchor = page.locator('#anchor-offbyone h1 .comment-anchor');
-		await expect(headingAnchor).toHaveText('elease Plan');
+		await expect(headingAnchor).toHaveText('Release Plan');
+		// The heading still gets its Milkdown slug — the trigger is unchanged;
+		// what changed is that it no longer cements the anchor.
 		await expect(page.locator('#anchor-offbyone h1')).toHaveAttribute('id', 'release-plan');
 
-		// Wait out the debounce and confirm nothing rescues it.
+		// Still correct after the debounce, and stable.
 		await page.waitForTimeout(SETTLE_MS);
-		await expect(headingAnchor).toHaveText('elease Plan');
-		expect(await anchorJson(page, 'offbyone-title-json')).toEqual({
-			from: 2,
-			to: 14,
-			quote: 'Release Plan',
-			prefix: '# ',
-			suffix: '\n\nThe first release',
-			status: 'anchored',
-			originalQuote: 'Release Plan',
-			lastKnownOffset: 0
-		});
+		await expect(headingAnchor).toHaveText('Release Plan');
 
-		// The confirming half of the same bug, and the reason it is hard to
-		// notice: the sidebar quotes the PROP, which still says "Release Plan",
-		// while the document highlights "elease Plan". Nothing in the UI
-		// disagrees with itself loudly enough to be seen.
+		// Document and sidebar now agree. Previously the sidebar quoted the prop
+		// ("Release Plan") while the document highlighted "elease Plan", and
+		// nothing in the UI disagreed with itself loudly enough to be noticed.
 		await page
 			.getByTestId('instance-offbyone')
 			.getByRole('button', { name: /comments sidebar/ })
