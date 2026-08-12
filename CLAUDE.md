@@ -11,6 +11,9 @@ This project exists to kick the tires on the `Chat` component from `@lostgradien
 experience. It is a testbed, not a product — expect the demo route and conversation wiring to
 change often as we try things against the real component.
 
+`ReviewEditor` from `@lostgradient/editor` gets the same treatment, under the `review-*`
+exercises — see [Using the ReviewEditor component](#using-the-revieweditor-component).
+
 As of Cinder 0.16, `Chat` lives in its own package, `@lostgradient/chat`, which peer-depends on
 `@lostgradient/cinder` (the design primitives), `conversationalist`, `zod`, and `svelte`.
 chatroom installs both `@lostgradient/*` packages from npm and provides those peers;
@@ -100,6 +103,40 @@ one) that streams tokens back to the client — never import `@anthropic-ai/sdk`
 streaming API (`beginStreaming`/`pushToken`/`endStreaming`, or the adapter's
 `onStreamBegin`/`onTokenPush`/`onStreamEnd` push handlers) rather than waiting for the full
 completion before rendering.
+
+## Using the ReviewEditor component
+
+`ReviewEditor` is a second component under test here, from a **third** package:
+`@lostgradient/editor`. It is a Markdown editor with anchored review threads, a diff view, and
+a summary view. Same consumption rule as Chat — the published tarball from npm, never a
+`bun link`.
+
+Its peers are heavier than Chat's, and chatroom declares all of them directly:
+`@lostgradient/cinder`, `@lostgradient/markdown`, `@milkdown/ctx`, `@milkdown/kit`,
+`@milkdown/prose`, and `prosemirror-inputrules` / `-model` / `-state` / `-view`. `@lostgradient/editor`
+peer-depends on `@lostgradient/cinder@^0.24.0`, so bumping editor can force a cinder bump — run
+`bun run sync:cinder` first if the ranges disagree.
+
+Base styles still load once in `src/routes/+layout.svelte` (the Cinder rule above applies
+unchanged); the editor's component CSS self-imports the same way chat's does.
+
+Two API facts worth knowing before you seed a `Thread`, because nothing warns when you get them
+wrong:
+
+- `anchor.from` / `anchor.to` are **ProseMirror positions**. Markdown markup is not text, so in
+  `# Release Plan` the 12-character quote `Release Plan` is `from: 1, to: 13` — not `0, 12`, and
+  not the raw-Markdown `2, 14`.
+- `anchor.lastKnownOffset` and `anchor.originalPosition.offset` are **`doc.textBetween()`
+  offsets** — a different coordinate space, in the same object. For that same quote, `0`.
+
+The shipped `with-comments` example seeds raw-Markdown indices and is wrong; that is
+[stevekinney/cinder#1267](https://github.com/stevekinney/cinder/issues/1267). Prefer building
+threads against a document you control and verifying the rendered `.comment-anchor` span covers
+exactly the quoted text.
+
+For anything beyond the props, bind the component (`bind:this`) and use its imperative surface —
+`getState`/`setState` for the persistence round-trip, `createThread`/`createComment` and friends
+for mutation, `getFormData`/`exportUnifiedDiff`/`exportMarkdownSummary` for output.
 
 ## Known upstream friction
 

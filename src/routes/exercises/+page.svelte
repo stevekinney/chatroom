@@ -15,7 +15,17 @@
 		| 'utilities'
 		| 'tool-approval'
 		| 'interleaving'
-		| 'contracts';
+		| 'contracts'
+		| 'review-basics'
+		| 'review-views'
+		| 'review-modes'
+		| 'review-comment-creation'
+		| 'review-comment-lifecycle'
+		| 'review-anchoring'
+		| 'review-form-and-exports'
+		| 'review-front-matter'
+		| 'review-state-and-session'
+		| 'review-ssr-and-a11y';
 
 	type Exercise = {
 		slug: ExerciseSlug;
@@ -95,6 +105,61 @@
 			title: 'Contracts',
 			description:
 				'Pin the schema-version compatibility and height-collapse environmental contracts.'
+		},
+
+		// ReviewEditor (`@lostgradient/editor`) — a second component under the
+		// same treatment as Chat. Ordered roughly from the surface inward:
+		// props, then views, then comments, then the machinery underneath.
+		{
+			slug: 'review-basics',
+			title: 'Review Basics',
+			description: 'Round-trip the bindable props and observe every notification callback fire.'
+		},
+		{
+			slug: 'review-views',
+			title: 'Review Views and Diff',
+			description: 'Switch editor/diff/summary, drive the diff view modes, and revert all changes.'
+		},
+		{
+			slug: 'review-modes',
+			title: 'Review Modes and Identity',
+			description: 'Exercise readonly mode and what currentUserId gates.'
+		},
+		{
+			slug: 'review-comment-creation',
+			title: 'Review Comment Creation',
+			description: 'Create threads from a selection and as document-level feedback.'
+		},
+		{
+			slug: 'review-comment-lifecycle',
+			title: 'Review Comment Lifecycle',
+			description: 'Edit, soft-delete, and hard-delete comments through a thread.'
+		},
+		{
+			slug: 'review-anchoring',
+			title: 'Review Anchoring',
+			description: 'Follow anchors through edits, re-anchoring, and orphaned text.'
+		},
+		{
+			slug: 'review-form-and-exports',
+			title: 'Review Form and Exports',
+			description: 'Submit a real form and copy each export the actions menu offers.'
+		},
+		{
+			slug: 'review-front-matter',
+			title: 'Review Front Matter',
+			description: 'Edit YAML front matter and check its round-trip fidelity.'
+		},
+		{
+			slug: 'review-state-and-session',
+			title: 'Review State and Session',
+			description:
+				'Serialize and restore a review through getState/setState and the session helpers.'
+		},
+		{
+			slug: 'review-ssr-and-a11y',
+			title: 'Review SSR and Accessibility',
+			description: 'Pin SSR output, hydration, live regions, and the keyboard path.'
 		}
 	];
 </script>

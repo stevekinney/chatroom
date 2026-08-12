@@ -41,12 +41,20 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.112.1",
 		"@lasercat/homogenaize": "^1.2.41",
-		"@lostgradient/chat": "^0.8.1",
-		"@lostgradient/cinder": "^0.23.1",
+		"@lostgradient/chat": "^0.9.0",
+		"@lostgradient/cinder": "^0.24.0",
+		"@lostgradient/editor": "^0.6.0",
 		"@lostgradient/markdown": "^0.2.0",
+		"@milkdown/ctx": "^7.17.3",
+		"@milkdown/kit": "^7.17.3",
+		"@milkdown/prose": "^7.17.3",
 		"armorer": "^0.13.0",
 		"conversationalist": "^0.6.1",
 		"lucide-svelte": "0.577.0",
+		"prosemirror-inputrules": "^1.5.1",
+		"prosemirror-model": "^1.25.4",
+		"prosemirror-state": "^1.4.4",
+		"prosemirror-view": "^1.41.3",
 		"zod": "4.4.1"
 	}
 }

@@ -381,8 +381,10 @@ test('scroll anchoring on prepend keeps an anchored mid-transcript message visua
 	// is unambiguous, and what this pins, is that nothing is left displaced: any
 	// excursion is confined to the frames right after the prepend.
 	//
-	// Whether those two frames are actually painted is an open question with
-	// Cinder. upstream: stevekinney/cinder#1259
+	// cinder#1259 tracked whether those two frames are actually painted; it closed
+	// as completed without changing this behavior, so the assertion below stays as
+	// written. The rAF-vs-paint caveat above is a property of this sampler, not of
+	// any Cinder bug, so it outlives the issue.
 	const SETTLED_FROM = 20;
 	expect(frames.length).toBeGreaterThan(SETTLED_FROM + 10);
 	const settledFrames = frames.slice(SETTLED_FROM);
