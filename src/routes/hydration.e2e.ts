@@ -10,11 +10,35 @@ import { expect, test } from '@playwright/test';
 // server on DEV_PORT) with absolute URLs, so they are unaffected by `baseURL`.
 const DEV_ORIGIN = 'http://localhost:5175';
 
-// Routes that render a `<Chat>`, plus one that does not. The Chat-free route is
-// the control: it proves a failure below is attributable to Chat rather than to
-// the shared layout, the base styles, or the hydration beacon.
-const CHAT_ROUTES = ['/', '/exercises/presentation', '/exercises/history-scroll'];
-const CHAT_FREE_ROUTE = '/exercises';
+// Every route here must hydrate cleanly. `/exercises` renders neither Chat nor
+// ReviewEditor and stays in the list as the control: if all of them go red at
+// once it points at the shared layout, the base styles, or the hydration
+// beacon rather than at a component.
+//
+// This used to assert that each Chat route emitted EXACTLY ONE mismatch — a
+// pinned bug, not a passing test. Fixed upstream by cinder#1261 and verified
+// here against `@lostgradient/cinder@0.24.1` / `@lostgradient/chat@0.9.1`: all
+// three Chat routes now report zero, as does a page containing nothing but a
+// Cinder icon, which is where that one was localized.
+const HYDRATING_ROUTES = [
+	'/',
+	'/exercises',
+	'/exercises/presentation',
+	'/exercises/history-scroll'
+];
+
+// ReviewEditor still emits one, for a DIFFERENT reason than the Chat issue —
+// bisected on the same dev server, same run: a bare `MarkdownEditor` is clean
+// and a bare `ReviewEditor` is not, so it is ReviewEditor's own shell rather
+// than the inner editor or the shared icons. SSR emits keyed block markers
+// (`<!--[0-->…<!--]-->`, `<!--[-1--><!--]-->`) around the LiveRegion and the
+// empty `{#if name}` hidden-input block where the client renders plain anchors.
+//
+// Pinned at exactly one, not weakened to "at most one": if it becomes two, that
+// is a new divergence worth knowing about, and if it becomes zero this test
+// fails and the route moves up into HYDRATING_ROUTES.
+// upstream: stevekinney/cinder#1277
+const REVIEW_EDITOR_ROUTES = ['/exercises/review-basics', '/exercises/review-views'];
 
 async function collectHydrationMismatches(
 	page: import('@playwright/test').Page,
@@ -35,21 +59,14 @@ async function collectHydrationMismatches(
 	return mismatches;
 }
 
-test('a route without Chat hydrates cleanly (control for the Chat routes below)', async ({
-	page
-}) => {
-	expect(await collectHydrationMismatches(page, CHAT_FREE_ROUTE)).toHaveLength(0);
-});
+for (const route of HYDRATING_ROUTES) {
+	test(`${route} hydrates without a mismatch`, async ({ page }) => {
+		expect(await collectHydrationMismatches(page, route)).toHaveLength(0);
+	});
+}
 
-for (const route of CHAT_ROUTES) {
-	// REGRESSION (pinned, not weakened): every route rendering Chat emits exactly
-	// one `hydration_mismatch` on load. The SSR markup and the post-hydration DOM
-	// for the Chat subtree do converge — identical tag sequences, differing only
-	// in attribute order — so Svelte detects the divergence and recovers; what is
-	// lost is the discarded hydration work and any state it resets. Flip this to
-	// `toHaveLength(0)` (and fold these into one loop with the control above)
-	// once fixed. upstream: stevekinney/cinder#756
-	test(`Chat route ${route} emits the known hydration mismatch`, async ({ page }) => {
+for (const route of REVIEW_EDITOR_ROUTES) {
+	test(`ReviewEditor route ${route} emits the known hydration mismatch`, async ({ page }) => {
 		expect(await collectHydrationMismatches(page, route)).toHaveLength(1);
 	});
 }

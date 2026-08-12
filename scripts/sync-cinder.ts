@@ -1,9 +1,17 @@
 #!/usr/bin/env bun
 /**
  * Bumps the upstream packages chatroom consumes — the @lostgradient workspace
- * releases (cinder, chat, markdown) plus armorer from agent-bureau — to their
- * latest published versions and re-verifies chatroom. Run after an upstream
- * release publishes.
+ * releases (cinder, chat, editor, markdown) plus armorer from agent-bureau — to
+ * their latest published versions and re-verifies chatroom. Run after an
+ * upstream release publishes.
+ *
+ * Keep this list in step with the `@lostgradient/*` entries in package.json.
+ * `@lostgradient/editor` was missing here for the whole of its first release
+ * cycle: the sync reported success while silently leaving editor on the
+ * previous major-equivalent range, so the `review-*` exercises typechecked
+ * against an older component than the one the sync claimed to have installed.
+ * A package absent from this list is not "not synced" — it is worse, because
+ * the sync still prints a clean bill of health.
  *
  * chatroom consumes the published npm packages (not a bun link against
  * ../cinder), so "sync" means "pull the newest release from the registry",
@@ -14,6 +22,7 @@ import { $ } from 'bun';
 const packages = [
 	'@lostgradient/cinder',
 	'@lostgradient/chat',
+	'@lostgradient/editor',
 	'@lostgradient/markdown',
 	'armorer'
 ];
