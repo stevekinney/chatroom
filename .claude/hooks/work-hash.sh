@@ -47,6 +47,18 @@ LAST_CLEARED_FILE="${STATE_DIR}/last-cleared"
 SIGNOFF_DIR="${STATE_DIR}/signoffs"
 NOTES_SENTINEL='--- notes (not parsed by the gate) ---'
 
+# Grounds on which work may be cleared WITHOUT convening the board, because
+# four adversarial agents are disproportionate to it. A waiver is not a silent
+# bypass: it names one of these, carries a written reason, and is recorded
+# beside the sign-offs, so the judgement can be audited after the fact.
+WAIVER_GROUNDS=(
+  formatting-only
+  comments-only
+  revert-of-cleared
+  generated-artifact
+  advisor-approved
+)
+
 # Git's empty tree, used as the baseline when HEAD is unborn so a freshly
 # scaffolded project is gated rather than free.
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -81,8 +93,14 @@ work_baseline() {
 }
 
 mark_cleared() {
+  local head
+  # Not `git rev-parse HEAD >file`: on an unborn HEAD that prints the literal
+  # string "HEAD" to stdout and exits 128, writing a baseline that resolves to a
+  # moving target -- which makes committing hide the work all over again.
+  head=$(git rev-parse --verify --quiet HEAD 2>/dev/null) || return 1
+  [ -n "$head" ] || return 1
   mkdir -p "$STATE_DIR" 2>/dev/null || return 1
-  git rev-parse HEAD > "$LAST_CLEARED_FILE" 2>/dev/null
+  printf '%s\n' "$head" > "$LAST_CLEARED_FILE"
 }
 
 # Sets WORK_HASH and WORK_ERROR. An empty WORK_HASH means either "no work"
@@ -91,7 +109,7 @@ mark_cleared() {
 compute_work_hash() {
   WORK_ERROR=""
   WORK_HASH=""
-  local baseline root tmpidx diff extra
+  local baseline root tmpidx diff extra real_index
   local -a status_bits
 
   root=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -101,16 +119,28 @@ compute_work_hash() {
   work_baseline || return 1
   baseline="$WORK_BASELINE"
 
-  # Index bits that hide modifications from both status and diff.
-  if git ls-files -v -- . 2>/dev/null | grep -q '^[a-z]'; then
-    WORK_ERROR="assume-unchanged or skip-worktree bits are set on tracked files, which hides changes from this gate. Clear them with: git update-index --no-assume-unchanged <path>"
+  # Index bits that hide modifications from both status and diff. `git ls-files -v`
+  # marks assume-unchanged with a lowercase letter and skip-worktree with an
+  # uppercase S specifically (all other uppercase letters are ordinary tracked
+  # states: H, M, R, C, K, ?) -- matching all of `[a-z]` was silently blind to
+  # skip-worktree, which is the cheaper of the two bits to set as a bypass.
+  if git ls-files -v -- . 2>/dev/null | grep -qE '^([a-z]|S)'; then
+    WORK_ERROR="assume-unchanged or skip-worktree bits are set on tracked files, which hides changes from this gate. Clear them with: git update-index --no-assume-unchanged <path> or git update-index --no-skip-worktree <path>"
     return 1
   fi
 
   # A throwaway index so untracked files diff exactly like tracked ones. The
   # real index is never touched.
   tmpidx=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a temporary index"; return 1; }
-  if [ -f "${root}/.git/index" ]; then cp "${root}/.git/index" "$tmpidx" 2>/dev/null || :; fi
+  # Drop mktemp's zero-byte file: git rejects it as "index file smaller than
+  # expected" and builds a valid one when the path is absent. In a LINKED
+  # WORKTREE `${root}/.git` is a file rather than a directory, so the old
+  # `${root}/.git/index` copy silently did nothing and left the empty file in
+  # place, blocking permanently with no way to clear it -- in the workflow this
+  # repo uses most. `--git-path` resolves correctly in both layouts.
+  rm -f "$tmpidx"
+  real_index=$(git rev-parse --git-path index 2>/dev/null)
+  if [ -n "$real_index" ] && [ -f "$real_index" ]; then cp "$real_index" "$tmpidx" 2>/dev/null || :; fi
   GIT_INDEX_FILE="$tmpidx" git add -A -N -- . "${WORK_DENY[@]}" >/dev/null 2>&1
   diff=$(GIT_INDEX_FILE="$tmpidx" git diff "$baseline" -- . "${WORK_DENY[@]}" 2>/dev/null)
   local diff_status=$?

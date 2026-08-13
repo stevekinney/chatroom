@@ -23,11 +23,17 @@ cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { echo "not in a project" >&2; exit
 passed=()
 note=""
 initialize=""
+waive=""
+grounds=""
+reason=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --pass) passed+=("${2:-}"); shift 2 ;;
     --note) note="${2:-}"; shift 2 ;;
     --initialize) initialize=1; shift ;;
+    --waive) waive=1; shift ;;
+    --grounds) grounds="${2:-}"; shift 2 ;;
+    --reason) reason="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -41,6 +47,24 @@ if [ -n "$initialize" ]; then
   echo "Baseline established at $(git rev-parse --short HEAD)."
   echo "Work from here forward requires a full board sign-off."
   exit 0
+fi
+
+if [ -n "$waive" ]; then
+  if [ ${#passed[@]} -gt 0 ]; then
+    echo "--waive records no verdicts; do not combine it with --pass." >&2; exit 1
+  fi
+  known=""
+  for g in "${WAIVER_GROUNDS[@]}"; do [ "$grounds" = "$g" ] && known=1; done
+  if [ -z "$known" ]; then
+    echo "--waive needs --grounds naming why the board is disproportionate here." >&2
+    echo "expected one of: ${WAIVER_GROUNDS[*]}" >&2
+    exit 1
+  fi
+  if [ -z "$reason" ]; then
+    echo "--waive needs --reason explaining the call in your own words." >&2
+    echo "A ground without a reason is a bypass button; with one it is a judgement someone can audit." >&2
+    exit 1
+  fi
 fi
 
 compute_work_hash
@@ -72,6 +96,32 @@ done
 mkdir -p "$SIGNOFF_DIR" || { echo "could not create ${SIGNOFF_DIR}" >&2; exit 1; }
 signoff="${SIGNOFF_DIR}/${work_hash}.signoff"
 
+if [ -n "$waive" ]; then
+  {
+    echo "# Review board WAIVED — no reviewer examined this work"
+    echo "work-hash: ${work_hash}"
+    echo "recorded: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    echo "grounds: ${grounds}"
+    echo
+    # The gate accepts a waiver only via this exact line, and it is written here
+    # rather than derived from free text, so a reason cannot forge one.
+    echo "WAIVED: ${grounds}"
+    echo
+    echo "$NOTES_SENTINEL"
+    printf '%s\n' "$reason" | sed 's/^/# /'
+  } > "$signoff"
+  mark_cleared
+  compute_work_hash
+  if [ -z "$WORK_ERROR" ] && [ -n "$WORK_HASH" ] && [ "$WORK_HASH" != "$work_hash" ]; then
+    cp "$signoff" "${SIGNOFF_DIR}/${WORK_HASH}.signoff"
+  fi
+  echo "Waived on grounds: ${grounds}"
+  echo "Recorded: $signoff"
+  echo "No reviewer examined this work. The waiver is auditable — make sure the reason would convince someone reading it later."
+  exit 0
+fi
+
 {
   echo "# Adversarial review board sign-off"
   echo "work-hash: ${work_hash}"
@@ -91,7 +141,16 @@ signoff="${SIGNOFF_DIR}/${work_hash}.signoff"
 
 echo "Recorded: $signoff"
 if [ ${#missing[@]} -eq 0 ]; then
+  # Advance the baseline, THEN re-record at the hash the gate will now compute.
+  # Advancing alone was a self-invalidating sign-off: it moved the baseline the
+  # hash was derived from, so the gate recomputed a different hash and blocked
+  # again, one line after printing that the work was cleared.
   mark_cleared
+  compute_work_hash
+  if [ -z "$WORK_ERROR" ] && [ -n "$WORK_HASH" ] && [ "$WORK_HASH" != "$work_hash" ]; then
+    cp "$signoff" "${SIGNOFF_DIR}/${WORK_HASH}.signoff"
+    echo "Also recorded at the post-baseline hash ${WORK_HASH:0:12}."
+  fi
   echo "All four members passed. This work is cleared."
   exit 0
 fi

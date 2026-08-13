@@ -50,6 +50,10 @@ if [ -f "$signoff" ]; then
   # never scanned: an earlier version grepped the whole file, so PASS lines
   # pasted into a note satisfied members who had never reviewed anything.
   verdicts=$(awk -v s="$NOTES_SENTINEL" 'index($0, s) {exit} {print}' "$signoff" 2>/dev/null)
+  # A waiver clears the gate without a board, on one of the recorded grounds.
+  # Parsed from the verdict block for the same reason the PASS lines are: free
+  # text after the sentinel must never be able to forge one.
+  if printf '%s\n' "$verdicts" | grep -qE '^WAIVED: [a-z-]+$'; then exit 0; fi
   missing=()
   for r in "${REVIEW_BOARD[@]}"; do
     [ "$(printf '%s\n' "$verdicts" | grep -cE "^${r}: PASS$")" = "1" ] || missing+=("$r")

@@ -10,7 +10,7 @@ They are adversaries by design. Their job is to find the reason this is not done
 
 ## Convene
 
-First, establish what is under review. The body of work is the unpushed commits on this branch plus everything uncommitted, scoped to `src`, `scripts`, `package.json`, `bun.lock`, and the config files. Summarize it in a couple of sentences so each reviewer knows what they are looking at.
+First, establish what is under review. The body of work is everything that differs from the last commit the board cleared (`.claude/.review-board-state/last-cleared`, established via `--initialize`)—committed or not, on this branch or parked on another, or stashed—except `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, `docs`, `.vscode`, and the board's own state directory, which the gate's `WORK_DENY` list in `.claude/hooks/work-hash.sh` excludes as documentation-only. Everything else is in scope, including `.claude/hooks` itself. Summarize it in a couple of sentences so each reviewer knows what they are looking at.
 
 Then spawn all four **in parallel**, in a single message with multiple tool calls. They are independent and reviewing serially wastes their independence:
 
@@ -35,13 +35,45 @@ If a reviewer cannot be satisfied because of a genuine limitation — the harnes
 
 ## Record the sign-off
 
-Only once all four have returned PASS on the current state of the work. Compute the same hash the gate uses and write the file:
+Only once all four have returned PASS on the current state of the work. Record one flag per
+member, so that four members is four separate assertions:
 
 ```bash
-bash .claude/hooks/review-board-signoff.sh
+bash .claude/hooks/review-board-signoff.sh \
+  --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor \
+  --note "one line per finding: fixed how, or refuted with what evidence"
 ```
 
-That script recomputes the work hash, refuses to write if the tree has changed since you last looked, and prompts you for the four verdict lines. Do not hand-write the sign-off file to get past the gate — the gate exists to protect the work, and forging it is the one failure mode nobody else will catch.
+There is no `--all`, and the script is not interactive — it records exactly the members you name
+and reports which are still missing. Notes are written below a sentinel the gate never parses, so
+free text cannot forge a verdict. A complete sign-off also advances the baseline, so the next body
+of work is measured from here.
+
+Do not hand-write the sign-off file to get past the gate. The gate exists to protect the work, and
+forging it is the one failure mode nobody else will catch.
+
+## When the board is disproportionate
+
+Not every change earns four agents. If it genuinely does not, waive it rather than convening a
+board you do not believe in:
+
+```bash
+bash .claude/hooks/review-board-signoff.sh --waive \
+  --grounds comments-only --reason "reworded a docblock; no executable line touched"
+```
+
+Grounds: `formatting-only`, `comments-only`, `revert-of-cleared`, `generated-artifact`,
+`advisor-approved`. Both the ground and a written reason are required, and the waiver is recorded
+beside the sign-offs so the judgement is auditable.
+
+`advisor-approved` is the escape hatch for being stuck: you may ask the user at any point what to
+do to keep moving, and their answer is legitimate grounds. Prefer asking over grinding, and prefer
+asking over waiving something you are unsure about.
+
+Waiving work that touches behavior is how this mechanism becomes theatre. If you are reaching for
+a waiver because the board would be slow or would probably find something, that is the case where
+you convene it.
 
 If the work changes after a sign-off, the hash changes and the sign-off no longer applies. That is intended. Re-run the reviewers whose areas moved.
 
