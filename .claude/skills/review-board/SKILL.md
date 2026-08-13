@@ -10,7 +10,7 @@ They are adversaries by design. Their job is to find the reason this is not done
 
 ## Convene
 
-First, establish what is under review. The body of work is everything that differs from the last commit the board cleared (`.claude/.review-board-state/last-cleared`, established via `--initialize`)—committed or not, on this branch or parked on another, or stashed—except `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, `docs`, `.vscode`, and the board's own state directory, which the gate's `WORK_DENY` list in `.claude/hooks/work-hash.sh` excludes by name. That list is a specific denylist, not a category — do not generalize it to "documentation", because markdown under `.claude/agents` and `.claude/skills` is fully in scope. Editing an agent's operating instructions changes behavior, and calling that a documentation edit is how you talk yourself out of a review you owe. Everything else is in scope, including `.claude/hooks` and this file. Summarize it in a couple of sentences so each reviewer knows what they are looking at.
+First, establish what is under review. The body of work is everything that differs from the last commit the board cleared (`.claude/.review-board-state/last-cleared`, established via `--initialize`)—committed or not, on this branch or parked on another, or stashed—except `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, and the board's own state directory — **not** `docs` or `.vscode`, which were on that list until the bundler turned out to resolve imports into them — which the gate's `WORK_DENY` list in `.claude/hooks/work-hash.sh` excludes by name. That list is a specific denylist, not a category — do not generalize it to "documentation", because markdown under `.claude/agents` and `.claude/skills` is fully in scope. Editing an agent's operating instructions changes behavior, and calling that a documentation edit is how you talk yourself out of a review you owe. Everything else is in scope, including `.claude/hooks` and this file. Summarize it in a couple of sentences so each reviewer knows what they are looking at.
 
 Then spawn all four **in parallel**, in a single message with multiple tool calls. They are independent and reviewing serially wastes their independence:
 
@@ -66,6 +66,20 @@ bash .claude/hooks/review-board-signoff.sh --waive \
 Grounds: `formatting-only`, `comments-only`, `revert-of-cleared`, `generated-artifact`,
 `advisor-approved`. Both the ground and a written reason are required, and the waiver is recorded
 beside the sign-offs so the judgement is auditable.
+
+A waiver is refused outright, on every ground, when the work touches a rendered surface —
+`WAIVER_NEVER` in `.claude/hooks/work-hash.sh`, currently `src/`, `static/`, `.svelte`, `.html`,
+`.css`, `package.json` and `bun.lock` (which pin the component versions, so they decide what
+every rendered surface actually is), and reaching work hidden by an external ignore source, a `git mv` out of `src/`, a
+non-ASCII path, or an in-tree `.gitignore` rule — but those are shapes that keep a _rendered_
+path visible, not independent triggers: a `notes.txt` hidden any of those ways is still waivable.
+The build config that decides what SSRs is also refused. Separately and unconditionally,
+**any stash at all refuses a waiver** — the guard cannot see inside one, so it
+refuses rather than measuring less than it claims, even for a stash holding
+nothing that renders. A waiver also advances the baseline, so waived work
+becomes the new cleared point. The grounds are self-asserted and nothing checks them against the
+diff, so this is the one class of mistake the script refuses to let you make rather than trusting
+you not to. If you hit that refusal, convene the board; it is not a bug.
 
 `advisor-approved` is the escape hatch for being stuck: you may ask the user at any point what to
 do to keep moving, and their answer is legitimate grounds. Prefer asking over grinding, and prefer

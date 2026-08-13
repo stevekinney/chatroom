@@ -276,7 +276,7 @@ Convene them with the `review-board` skill, which runs all four in parallel. A `
 resolved by fixing the finding or by refuting it with evidence you can show — never by rewording
 it, narrowing a test until it passes, or calling it out of scope.
 
-A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substantive work in flight, stopping is blocked until a sign-off exists naming all four. The sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the board reconvenes on what actually ships. What the gate excludes is a specific denylist, not "documentation" — `WORK_DENY` in `.claude/hooks/work-hash.sh` is the authority, and it currently covers `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, `docs`, `.vscode`, and the state directory. Markdown under `.claude/agents` and `.claude/skills` is reviewable work: editing an agent's operating instructions changes behavior, and calling that a documentation edit is how you talk yourself out of a review you owe.
+A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substantive work in flight, stopping is blocked until a sign-off exists naming all four. The sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the board reconvenes on what actually ships. What the gate excludes is a specific denylist, not "documentation" — `WORK_DENY` in `.claude/hooks/work-hash.sh` is the authority, and it currently covers `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, and the state directory. `docs` and `.vscode` used to be on it and are deliberately not: the bundler resolves a relative import or an `import.meta.glob` into either, so excluding them made them a permanent home for unreviewed components — one board round on the import line, and everything added after it was free. Markdown under `.claude/agents` and `.claude/skills` is reviewable work: editing an agent's operating instructions changes behavior, and calling that a documentation edit is how you talk yourself out of a review you owe.
 
 The gate fails closed by design: any state it cannot evaluate is a block, never an allow. A
 missing or unresolvable baseline, a missing helper, index bits that hide changes, or a failed
@@ -287,9 +287,59 @@ adopts `HEAD` on its own, because doing so made deleting one gitignored file a b
 Scope is a denylist rather than an allowlist, so `.claude/hooks` and `.gitignore` are themselves
 reviewable work, and hiding a source file behind a `.gitignore` rule is a change the board sees.
 Ignore sources **outside** the work tree are a different matter: `.git/info/exclude` and
-`core.excludesFile` hide files with no reviewable artifact anywhere, so the gate refuses to run at
-all while either is active rather than quietly measuring less than it claims. Work parked on
-another branch or in a stash still counts.
+`core.excludesFile` hide files with no reviewable artifact anywhere. The gate used to refuse to
+run at all while either was active, which is a fine principle and a bad rule — a global excludes
+file is a normal setup, and a gate that blocks on one is a gate people turn off. It now enumerates
+what those sources hide and folds the contents into the hash, including inside an ignored
+directory, so the hiding place is closed rather than the gate. Work parked on another branch or in
+a stash still counts.
+
+Reviewers demonstrated several more hiding places, each now closed and probed: work reachable only
+from a tag or any other ref (the sweep covers all refs, not just `refs/heads`); a linked worktree
+that is dirty **or detached**, and a dirty submodule or embedded repo — all three refuse, since
+none can be enumerated from here, and the submodule check keys on gitlinks rather than on
+`.gitmodules`, which an embedded `git init` never creates; and a symlink under `src/` or `static/`
+resolving outside the reviewable set, in either the file or directory shape, which let a 40-byte
+blob stand in for an unbounded surface.
+
+An in-tree `.gitignore` rule no longer grants a blanket pass: the carve-out was sound only for
+_new_ rules, and this repo's own unanchored `tmp/` and `test-results` match under `src/`. Two
+bounds keep that from hashing the world, and the shape of both was earned the hard way. Artifact
+detection is a single left-to-right **segment scan**, first match wins: `src/routes/build/x` is
+kept because `src` comes first, `coverage/lcov-report/src/a.html` is dropped because `coverage`
+does. Two earlier versions used two lists ordered opposite ways and produced the same bug twice —
+once hiding a real route named `build`, once hashing 3000 Istanbul files at seven seconds. The
+hashable set is a **denylist** of opaque blobs (images, archives, fonts, `.map`, `.lock`), not an
+allowlist: an allowlist is the mistake this file's own header warns about, and it had been
+silently dropping `.scss`, `.mts`, `.jsx`, `.tsx` and `.vue` under a hidden `src/`.
+
+Two caveats the docs previously got backwards. A path hidden by an **external** source is hashed
+whatever it is, so an externally-ignored `.env` does move the hash — it stays out of this repo
+only because `.gitignore` also lists it, which makes the source in-tree. And machine noise is
+exempt by name: `.DS_Store`, `Thumbs.db`, `.localized`, and `.claude/settings.local.json`, the last because
+Claude Code rewrites it on a permission grant, which let the gate invalidate its own sign-off
+through an action it had just provoked.
+
+`WORK_DENY` applies to the hidden-file enumeration as well as to the diff. It did not, once, and
+the two paths were effectively separate implementations of "what is work" — which is why four
+consecutive rounds each found a new hole in a different leaf predicate. When an external rule hid
+the state directory, that gap livelocked the gate outright: four PASSes printed "cleared", the
+gate blocked anyway, and every retry wrote two more sign-off files that moved the hash further
+from the one just approved. There is now an explicit check for that, so the class fails with a
+message instead of a loop.
+
+Run `bash .claude/hooks/review-board-gate.test.sh` after touching any of this — 72 probes, not
+wired into `bun run test`, so it only runs when someone types it.
+
+Do not read a green suite as an audit ledger. Most probes have been shown to fail when the thing
+they name is broken, but not all of them, and the set that has is not identifiable from the file.
+Two failure modes have shipped repeatedly and both look identical to coverage: a probe that passes
+through a fallback branch rather than the guard it names — a `.cjs` config-symlink probe does
+exactly that today, because `docs/` left `WORK_DENY`, and a symlink probe asserted only that an _untracked_
+link blocks, which is true with the guard deleted — and a probe whose fixture never reaches the
+code it targets, which is why the waiver-side arms were unpinned for several rounds while their
+hash-side twins were covered. One probe is labelled `[unproven]` in its own name; that label marks
+a guard nobody has found a discriminating fixture for, not the only unverified probe.
 
 **A Stop hook cannot police its own disablement, so do not rely on the gate to catch its own
 neutering.** `review-board-gate.sh` sources `work-hash.sh` before it computes scope, so an edit
@@ -313,6 +363,17 @@ beside the sign-offs, so the call can be audited later. Both are required: a gro
 is a bypass button, and a reason that would not convince someone reading it in a month is not a
 reason. Waiving work that touches behavior is how this whole mechanism becomes theatre.
 
+**Anything with a rendered surface is refused outright, whatever ground you name.** `WAIVER_NEVER`
+in `work-hash.sh` currently covers `src/`, `static/`, `.svelte`, `.html`, `.css`, the build
+config that decides what SSRs (`vite.config.ts`, `svelte.config.js`, `postcss.config.cjs`,
+`tailwind.config.ts`), and `package.json` / `bun.lock`, which pin the component versions — this repo has no `svelte.config.js`, so `vite.config.ts` is where the
+`sveltekit()` plugin lives. The refusal also reaches work hidden from an ordinary diff — a component concealed by
+`.git/info/exclude` or a global excludes file, a route moved out of `src/` by `git mv`, a path
+with a non-ASCII segment, or anything parked in a stash. Every ground is a claim about the diff
+that nothing verifies, so `formatting-only` after running prettier over a component would
+otherwise be a silent, complete bypass of the a11y and hydration review. Expect the refusal there
+and convene the board; the waiver is for work confined to `.claude` and `scripts` — not config, which decides what SSRs, and not `package.json`, which decides which component implementation does.
+
 Work is measured from the **last commit the board cleared**, not from a remote—this repo has no remote, and an "unpushed commits" definition would let committing bypass the gate entirely, which is exactly what you do before declaring done. Committing after a PASS does not invalidate it, since the hash covers content rather than whether that content has been committed. The baseline is established deliberately with `--initialize` (see above), not adopted automatically from `HEAD`, so installing the gate does not retroactively demand review of existing history but also does not silently baseline itself the first time the gate runs.
 
 Three agents assist rather than review: **exercise-builder** for new `/exercises` routes and
@@ -334,8 +395,8 @@ that session's own tool calls, and only when the write actually changes content 
 mtime. A file the session never touched, a no-op rewrite, or a file read with `offset`/`limit`
 all produce nothing. So "no notice" is not evidence that nothing changed.
 
-**Subagents appear not to receive these at all.** Across every transcript in this project there
-are 45 records, all in main sessions and none in a subagent, and two reviewers independently ran
+**Subagents appear not to receive these at all.** Across every transcript in this project, every such record is in a main session and none is in
+a subagent, and two reviewers independently ran
 the out-of-band write as subagents and got nothing. If you are a subagent, expect zero — and
 treat one that does arrive as worth reporting rather than as routine.
 

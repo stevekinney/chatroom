@@ -205,7 +205,7 @@ Acceptance criteria:
 
 - `SKILL.md`'s description and steps name all five packages the script bumps.
 
-#### CA-4: `CLAUDE.md` cites a closed, shipped-fixed issue as a live trap — todo
+#### CA-4: `CLAUDE.md` cites a closed, shipped-fixed issue as a live trap — done
 
 `CLAUDE.md`'s ReviewEditor section says the shipped `with-comments` example seeds raw-Markdown indices and is wrong, citing `stevekinney/cinder#1267`. That issue is closed (`stateReason: COMPLETED`), and the installed `@lostgradient/editor@0.9.0`'s `with-comments` example now seeds correct ProseMirror positions with an inline comment explaining the two coordinate spaces — exactly the requested fix, already in the version this repo depends on. `CLAUDE.md` itself says elsewhere that a closed issue citing unresolved behavior should be verified, not left standing; this is the same failure in reverse, an already-fixed bug still cited as current.
 

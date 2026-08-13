@@ -13,10 +13,17 @@
 # "--all" flag: signing off is four separate assertions, each claiming a
 # specific reviewer examined this exact work.
 #
-# --initialize establishes the baseline at HEAD without claiming any review. It
-# exists so installing the gate does not retroactively demand review of existing
-# history, and it is deliberately a separate, explicit act — the gate no longer
-# adopts HEAD on its own, because doing so made deleting one file a bypass.
+# --initialize REFUSES whenever sign-offs already exist on disk, whatever state
+# the baseline file is in -- missing OR unresolvable -- since either means this
+# repo was gated before and the file was lost rather than never written. It also
+# refuses when combined with --pass, when a baseline still resolves, and when
+# work is already in flight (reachable on an unborn HEAD, where work_baseline
+# returns the empty tree without setting WORK_ERROR). It re-establishes only for
+# a repo that has never been gated.
+#
+# A waiver advances the baseline exactly as a full sign-off does: waived work
+# becomes the new cleared point and leaves the reviewable set.
+
 set -uo pipefail
 
 cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { echo "not in a project" >&2; exit 1; }
@@ -55,9 +62,35 @@ if [ -n "$initialize" ]; then
     echo "--initialize records no verdicts; do not combine it with --pass." >&2
     exit 1
   fi
+  # An UNRESOLVABLE baseline is the one case where re-initializing is the repair
+  # rather than a bypass. `work_baseline` tells the user to run --initialize when
+  # history has been rewritten or the state file is damaged, and this refusal
+  # used to reject exactly that -- while --waive also failed, because it computes
+  # the hash from the same broken baseline. The gate blocked, and no documented
+  # path could clear it. Refusing on a baseline that still resolves keeps the
+  # bypass shut; refusing on one that does not was a dead end.
   if [ -f "$LAST_CLEARED_FILE" ]; then
-    echo "A baseline already exists (${LAST_CLEARED_FILE})." >&2
-    echo "Re-initializing would clear whatever is currently in flight with no reviewer and no record, which is strictly weaker than a waiver. If this work genuinely does not need the board, waive it with --waive --grounds <ground> --reason \"...\" so the call is auditable." >&2
+    existing=$(cat "$LAST_CLEARED_FILE" 2>/dev/null)
+    if [ -n "$existing" ] && git rev-parse --verify --quiet "${existing}^{commit}" >/dev/null 2>&1; then
+      echo "A baseline already exists (${LAST_CLEARED_FILE})." >&2
+      echo "Re-initializing would clear whatever is currently in flight with no reviewer and no record, which is strictly weaker than a waiver. If this work genuinely does not need the board, waive it with --waive --grounds <ground> --reason \"...\" so the call is auditable." >&2
+      exit 1
+    fi
+    if [ -d "$SIGNOFF_DIR" ] && [ -n "$(ls -A "$SIGNOFF_DIR" 2>/dev/null)" ]; then
+      echo "The recorded baseline (${existing:-empty}) no longer resolves, but sign-offs exist in ${SIGNOFF_DIR}, so this repo has been gated before." >&2
+      echo "Re-establishing here would clear whatever is in flight with no reviewer and no record. Restore the baseline to a commit that resolves, or waive the work explicitly." >&2
+      exit 1
+    fi
+    echo "The recorded baseline (${existing:-empty}) no longer resolves; re-establishing it." >&2
+  elif [ -d "$SIGNOFF_DIR" ] && [ -n "$(ls -A "$SIGNOFF_DIR" 2>/dev/null)" ]; then
+    # No baseline file, but sign-offs exist: this repo HAS been gated, so the
+    # baseline did not go missing on its own. Deleting one gitignored file and
+    # running the --initialize that work_baseline's own error text prints was a
+    # complete bypass -- it cleared committed unreviewed work with no reviewer
+    # and no record, which is strictly weaker than a waiver, while four places
+    # claimed that hole was shut.
+    echo "The baseline file is missing but sign-offs exist in ${SIGNOFF_DIR}, so this repo has been gated before." >&2
+    echo "Re-initializing here would clear whatever is in flight with no reviewer and no record. Restore the baseline file. Waiving does not work either: it resolves the same baseline first." >&2
     exit 1
   fi
   compute_work_hash
@@ -104,16 +137,18 @@ if [ -n "$waive" ]; then
   # The ground is self-asserted and nothing verifies it against the diff, so the
   # one class of mistake that cannot be undone later -- shipping a rendered
   # surface with no a11y or hydration review -- is refused outright.
-  forbidden=$(waiver_forbidden_paths)
+  # Plainly, never $(...): a subshell would discard WORK_ERROR and every error
+  # path would read as "nothing forbidden".
+  waiver_forbidden_paths
   if [ -n "$WORK_ERROR" ]; then
     echo "Cannot waive: ${WORK_ERROR}" >&2
     exit 1
   fi
-  if [ -n "$forbidden" ]; then
-    echo "This work is not waivable: it changes files with a rendered surface." >&2
-    printf '%s\n' "$forbidden" | sed 's/^/  /' >&2
+  if [ -n "$WAIVER_FORBIDDEN" ]; then
+    echo "This work is not waivable: it changes a rendered surface or the config that decides one." >&2
+    printf '%s' "$WAIVER_FORBIDDEN" | sed 's/^/  /' >&2
     echo "Grounds are self-asserted and never checked against the diff, so anything" >&2
-    echo "reaching the browser convenes the board. Run it: /review-board" >&2
+    echo "that reaches the browser, or decides what does, convenes the board. Run it: /review-board" >&2
     exit 1
   fi
 fi
