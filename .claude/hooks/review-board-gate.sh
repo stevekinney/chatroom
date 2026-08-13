@@ -2,38 +2,65 @@
 # Stop-hook gate: no body of work is complete until the adversarial review board
 # has signed off on THIS exact body of work.
 #
-# The board is four agents, each with veto power. The `review-board` skill runs
-# them; review-board-signoff.sh records the result this script validates.
-#
-# The sign-off is keyed to a hash of the work itself, so changing anything after
-# a PASS invalidates it. That is deliberate: "completely satisfy" means the board
-# approved what actually ships, not an earlier draft of it.
+# Everything here fails closed. An earlier version exited 0 on every error path,
+# so a corrupt index, a missing helper, or an absent `shasum` all read as
+# "approved". A gate that cannot evaluate the work must block it.
 set -uo pipefail
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
-command -v git >/dev/null 2>&1 || exit 0
-git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+emit_block() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -n --arg r "$1" '{decision: "block", reason: $r}'
+  else
+    local esc=${1//\\/\\\\}
+    esc=${esc//\"/\\\"}
+    esc=${esc//$'\n'/\\n}
+    printf '{"decision":"block","reason":"%s"}\n' "$esc"
+  fi
+  exit 0
+}
 
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null ||
+  emit_block "The review-board gate could not enter the project directory, so it cannot verify this work has been reviewed."
+
+command -v git >/dev/null 2>&1 ||
+  emit_block "The review-board gate needs git to determine what changed, and git is not available."
+
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0 # genuinely not a repo: nothing to gate
+
+helper="$(dirname "${BASH_SOURCE[0]}")/work-hash.sh"
+[ -r "$helper" ] ||
+  emit_block "The review-board gate is missing its helper (${helper}). It cannot evaluate this work, and a gate that cannot see the work must not clear it."
 # shellcheck source=./work-hash.sh
-. "$(dirname "${BASH_SOURCE[0]}")/work-hash.sh" 2>/dev/null || exit 0
+. "$helper" ||
+  emit_block "The review-board gate could not load ${helper}."
 
-work_hash=$(compute_work_hash)
-# No substantive work in flight, or the hash could not be computed: no gate.
-[ -z "$work_hash" ] && exit 0
+compute_work_hash
+work_hash="$WORK_HASH"
+if [ -n "$WORK_ERROR" ]; then
+  emit_block "The review-board gate could not evaluate this work: ${WORK_ERROR}
+
+Until that is resolved the work cannot be marked complete."
+fi
+[ -z "$work_hash" ] && exit 0 # no substantive work in flight
 
 signoff="${SIGNOFF_DIR}/${work_hash}.signoff"
 
 if [ -f "$signoff" ]; then
+  # Parse only the verdict block. Notes are written after a sentinel and are
+  # never scanned: an earlier version grepped the whole file, so PASS lines
+  # pasted into a note satisfied members who had never reviewed anything.
+  verdicts=$(awk -v s="$NOTES_SENTINEL" 'index($0, s) {exit} {print}' "$signoff" 2>/dev/null)
   missing=()
   for r in "${REVIEW_BOARD[@]}"; do
-    grep -qE "^${r}: PASS$" "$signoff" 2>/dev/null || missing+=("$r")
+    [ "$(printf '%s\n' "$verdicts" | grep -cE "^${r}: PASS$")" = "1" ] || missing+=("$r")
   done
-  [ ${#missing[@]} -eq 0 ] && exit 0
-  reason="An adversarial review board sign-off exists for this exact work, but it is incomplete. Still missing a PASS from: ${missing[*]}.
+  if [ ${#missing[@]} -eq 0 ]; then exit 0; fi
+  emit_block "An adversarial review board sign-off exists for this exact work, but it is incomplete. Still missing a PASS from: ${missing[*]}.
 
 All four members have veto power and all four must PASS on the work as it now stands. Convene the missing reviewers via the review-board skill, resolve what they find, and record their verdicts. A FAIL is resolved by fixing the finding, or by refuting it with evidence you can show -- never by rewording it."
-else
-  reason="This body of work has not been through the adversarial review board, so it is not complete.
+fi
+
+emit_block "This body of work has not been through the adversarial review board, so it is not complete.
 
 Run the \`review-board\` skill. It convenes four reviewers in parallel, each with veto power:
   - test-integrity-auditor: proves every new or changed test actually fails when the behavior it pins is broken
@@ -44,15 +71,3 @@ Run the \`review-board\` skill. It convenes four reviewers in parallel, each wit
 All four must return PASS on the work as it currently stands. Findings are resolved by fixing them, or by refuting them with evidence you can show; a finding is never resolved by restating it.
 
 If a reviewer genuinely cannot be satisfied -- a harness limitation makes something unprovable, say -- that is reportable, not skippable: name the reviewer, the criterion, what you tried, and what would settle it, then ask the user how to proceed."
-fi
-
-# Escape for JSON without assuming jq is present.
-if command -v jq >/dev/null 2>&1; then
-  jq -n --arg r "$reason" '{decision: "block", reason: $r}'
-else
-  esc=${reason//\\/\\\\}
-  esc=${esc//\"/\\\"}
-  esc=${esc//$'\n'/\\n}
-  printf '{"decision":"block","reason":"%s"}\n' "$esc"
-fi
-exit 0

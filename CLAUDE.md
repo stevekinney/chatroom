@@ -280,6 +280,16 @@ A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substanti
 sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the
 board reconvenes on what actually ships. Documentation-only edits do not convene a board.
 
+The gate fails closed by design: any state it cannot evaluate is a block, never an allow. A
+missing or unresolvable baseline, a missing helper, index bits that hide changes, or a failed
+`git`/`shasum` all block with an explanation rather than passing silently. Establish the baseline
+deliberately with `bash .claude/hooks/review-board-signoff.sh --initialize`; the gate no longer
+adopts `HEAD` on its own, because doing so made deleting one gitignored file a bypass.
+
+Scope is a denylist rather than an allowlist, so `.claude/hooks` and `.gitignore` are themselves
+reviewable work — neutering the gate, or hiding a source file behind an ignore rule, is a change
+the board sees. Work parked on another branch or in a stash still counts.
+
 Work is measured from the **last commit the board cleared**, not from a remote — this repo has no
 remote, and an "unpushed commits" definition would let committing bypass the gate entirely, which
 is exactly what you do before declaring done. Committing after a PASS does not invalidate it,
