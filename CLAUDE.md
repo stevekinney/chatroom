@@ -256,6 +256,34 @@ something that still reproduces and the issue shows closed, reopen it (`gh issue
 --repo <owner/repo> --comment '...'`) with a short note — a closed issue is not a valid record of
 an unresolved bug, no matter what the last comment on it says.
 
+## The adversarial review board
+
+No body of work is complete until four reviewers have each returned PASS on it. They live in
+`.claude/agents/` and every one of them has veto power:
+
+- **test-integrity-auditor**: reverts the code each new test claims to pin and confirms the test
+  actually fails. Also hunts wait-threshold padding and assertions that cannot fail.
+- **harness-skeptic**: challenges whether each finding is real component behavior or an artifact
+  of happy-dom, testing-library, or the fixture. Demands real-browser confirmation before
+  anything is filed upstream.
+- **contract-auditor**: checks docs, types, READMEs, changesets, comments, and issue state still
+  match what the code does.
+- **a11y-ssr-auditor**: keyboard reachability and escapability, focus behavior, announcements,
+  and hydration.
+
+Convene them with the `review-board` skill, which runs all four in parallel. A `VERDICT: FAIL` is
+resolved by fixing the finding or by refuting it with evidence you can show — never by rewording
+it, narrowing a test until it passes, or calling it out of scope.
+
+A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substantive changes under
+`src` or `scripts` in flight, stopping is blocked until a sign-off exists naming all four. The
+sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the
+board reconvenes on what actually ships. Documentation-only edits do not convene a board.
+
+Three agents assist rather than review: **exercise-builder** for new `/exercises` routes and
+specs, **upstream-fixer** for driving the loop above end to end, and **anchor-cartographer** for
+the two anchor coordinate spaces.
+
 ## Commands
 
 ```bash

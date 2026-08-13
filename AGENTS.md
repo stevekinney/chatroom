@@ -14,3 +14,21 @@ full loop and for what to do when it cannot finish.
 
 See also [ROADMAP.md](./ROADMAP.md) for what still needs coverage, with acceptance criteria per
 item.
+
+## If you are not Claude Code
+
+The [adversarial review board](./CLAUDE.md#the-adversarial-review-board) is a **requirement**,
+but its enforcement is not portable. The four reviewers live in `.claude/agents/`, the
+`review-board` skill that convenes them lives in `.claude/skills/`, and the gate that blocks
+completion is a Claude Code `Stop` hook. Another CLI will load none of that and will hit no
+resistance at all when declaring work done.
+
+The bar is the same regardless. If you cannot spawn the reviewers, you still owe every check they
+perform, and you owe it explicitly rather than by assertion: prove each new test fails when the
+behavior it pins is broken, confirm any finding outside the harness that produced it before
+filing upstream, verify docs and types still match the code, and check keyboard reachability and
+hydration for anything you touched. Read the four agent files as checklists — they are written to
+be useful as prose, not just as prompts.
+
+State plainly in your summary which checks you performed and which you could not, so a review
+that did not happen is visible as such rather than implied.

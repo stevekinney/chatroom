@@ -13,7 +13,7 @@ Each item has an ID (`RE-1`, `DV-2`, …), a status, and acceptance criteria. St
 - **done**: merged, with the acceptance criteria met
 - **blocked**: waiting on an upstream fix, with the issue linked
 
-An item is only **done** when every one of its acceptance criteria holds, `bun run lint && bun run check && bun run test:e2e` is clean, and any upstream defect it surfaced is filed per the routing in `CLAUDE.md`.
+An item is only **done** when every one of its acceptance criteria holds, `bun run lint && bun run check && bun run test:e2e` is clean, any upstream defect it surfaced has been driven through the loop in `CLAUDE.md`, and the adversarial review board has returned PASS from all four members on the work as it finally stands. The board is convened with the `review-board` skill and enforced by a Stop hook, so "done" is not self-declared.
 
 Two rules carry over from how this repo already works, and they apply to every item here. Assertions must be checked against real behavior rather than assumed: if an exercise's expectation would pass with the feature removed, it is not pinning anything. And no wait-threshold padding — poll for a condition, never sleep past a guess. Cinder's `AGENTS.md` treats a bumped timeout as a blocking review comment with no exception, and the same standard applies here.
 
