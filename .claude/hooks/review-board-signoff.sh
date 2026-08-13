@@ -67,6 +67,10 @@ signoff="${SIGNOFF_DIR}/${work_hash}.signoff"
 } > "$signoff"
 
 echo "Recorded: $signoff"
+if [ ${#missing[@]} -eq 0 ]; then
+  # Advance the baseline so future work is measured from here forward.
+  mark_cleared
+fi
 if [ ${#missing[@]} -gt 0 ]; then
   echo
   echo "Incomplete — still missing a PASS from: ${missing[*]}"

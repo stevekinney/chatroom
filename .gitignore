@@ -27,3 +27,6 @@ tmp/
 
 .playwright-mcp/
 .codex_stderr_path_tmp
+
+# Review board baseline (local, per-checkout)
+.claude/.review-board-state/

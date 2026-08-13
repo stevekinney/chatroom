@@ -280,6 +280,13 @@ A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substanti
 sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the
 board reconvenes on what actually ships. Documentation-only edits do not convene a board.
 
+Work is measured from the **last commit the board cleared**, not from a remote — this repo has no
+remote, and an "unpushed commits" definition would let committing bypass the gate entirely, which
+is exactly what you do before declaring done. Committing after a PASS does not invalidate it,
+since the hash covers content rather than whether that content has been committed. The baseline
+initializes to `HEAD` the first time the gate runs, so installing it does not retroactively demand
+review of existing history.
+
 Three agents assist rather than review: **exercise-builder** for new `/exercises` routes and
 specs, **upstream-fixer** for driving the loop above end to end, and **anchor-cartographer** for
 the two anchor coordinate spaces.
