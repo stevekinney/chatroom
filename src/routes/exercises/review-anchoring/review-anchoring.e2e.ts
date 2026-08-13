@@ -30,8 +30,9 @@ const INSTANCE_COUNT = 5;
 const SETTLE_MS = 900;
 
 // `drift-move-slow` reinserts the deleted word 450ms after deleting it. Waiting
-// past the paste AND the debounce it restarts is the only way to see that the
-// restored text does not bring the thread back.
+// past the paste AND the debounce it restarts is the only way to see the
+// re-anchoring pass that the restored text triggers (cinder#1284: it recovers
+// the orphaned anchor; it used to have no thread left to recover).
 const LATE_PASTE_SETTLE_MS = 1400;
 
 /** The drift instance's anchor exactly as the page seeds it. */
@@ -104,6 +105,14 @@ test.describe('review-anchoring: where a seeded anchor lands', () => {
 
 		const items = page.locator('#anchor-mount-sidebar .thread-item');
 		await expect(items).toHaveCount(3);
+
+		// A document-level anchor has an empty quote BY DESIGN, so it must never be
+		// treated as "quote missing from the document". `anchorMatchesDocument`
+		// returns true for an empty quote precisely so these bypass re-anchoring;
+		// if that guard were lost they would all be marked orphaned, announced as
+		// missing text, and retried on every subsequent edit forever.
+		await expect(items.first()).not.toHaveAttribute('data-orphaned', /.*/);
+		await expect(page.locator('#anchor-mount-sidebar .thread-orphaned')).toHaveCount(0);
 		// Document-level threads sort ahead of the anchored ones and render a
 		// label instead of a quote, which is the only place they are visible.
 		await expect(items.first()).toContainText('Document comment');
@@ -292,36 +301,74 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 		expect(await anchorJson(page, 'drift-json')).toEqual(SEEDED_DRIFT_ANCHOR);
 	});
 
-	test('deleting the anchored text removes the thread, fires onthreaddelete, and announces it', async ({
+	test('deleting the anchored text ORPHANS the thread and keeps it, silently to onthreaddelete', async ({
 		page
 	}) => {
-		// `comments/types.ts` documents this as the reason there is no "orphaned"
-		// anchor status: "When anchor text is deleted, threads are automatically
-		// removed." That removal genuinely happens now — the plugin detects the
-		// collapsed range, the deferred pass fails to find the quote anywhere in
-		// the document, and the component drops the thread from the bindable
-		// array rather than leaving it pointing at text that is gone.
+		// This used to delete the thread outright. `comments/types.ts` even
+		// documented that as the reason `AnchorStatus` had no "orphaned" member:
+		// "When anchor text is deleted, threads are automatically removed." The
+		// plugin saw a collapsed range, the deferred pass failed to find the quote
+		// anywhere, and the component dropped the thread from the bindable array
+		// and fired `onthreaddelete`.
+		//
+		// cinder#1284 reversed that on purpose. At the moment text disappears, a
+		// deletion and the first half of a cut-and-paste look identical, and the
+		// re-anchoring pass runs 300ms later — faster than any person cutting a
+		// paragraph and pasting it back. So the old behaviour destroyed comments
+		// during ordinary editing, with no undo. `AnchorStatus` now has
+		// 'orphaned': the anchor is marked, the thread STAYS in the bindable
+		// array, and it is retried on every later re-anchoring pass. Removing a
+		// thread is the consumer's decision now, so `onthreaddelete` does not fire
+		// here at all.
 		await page.getByTestId('drift-delete').click();
 
-		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 0');
+		// Kept, not removed — and the anchor keeps everything a later recovery
+		// needs: its quote, its context, and its last known offset. Only `status`
+		// changes, plus the collapsed range the deletion left behind.
+		await expect
+			.poll(() => anchorJson(page, 'drift-json'))
+			.toEqual({
+				from: 44,
+				to: 44,
+				quote: 'dashboard',
+				prefix: 'The first release includes a ',
+				suffix: ' and export actions.',
+				status: 'orphaned',
+				originalQuote: 'dashboard',
+				lastKnownOffset: 42
+			});
+		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
+		// An orphaned anchor has no text to highlight, so it renders no
+		// decoration. That is the visible half of "kept but not placed".
 		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveCount(0);
-		await expect(page.getByTestId('drift-json')).toHaveText('null');
-		await expect(page.getByTestId('event-log')).toContainText('drift:threaddelete:drift-dashboard');
 
 		// The announcement goes to a correctly hidden `role="status"` region, so
 		// it is never visible text — and it clears itself after 1000ms. The page
 		// mirrors it into an append-only log precisely so this assertion is not
-		// racing that timer.
+		// racing that timer. The wording is the polite one the new contract calls
+		// for: it reports the text is gone and says the comment survived.
 		await expect(page.getByTestId('announcements')).toContainText(
-			'Comment thread removed because its anchored text was deleted'
+			'The text a comment was anchored to is no longer in the document. The comment is kept.'
 		);
 
+		// Outlast the debounce to prove the thread's survival is permanent rather
+		// than merely early, and that no deletion event ever arrives.
+		await page.waitForTimeout(SETTLE_MS);
+		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
+		await expect(page.getByTestId('event-log')).toBeEmpty();
+
+		// The sidebar is where an orphaned thread is reachable at all, since the
+		// document shows nothing. It is marked for styling and, more importantly,
+		// says so in words.
 		await page
 			.getByTestId('instance-drift')
 			.getByRole('button', { name: /comments sidebar/ })
 			.click();
-		await expect(page.locator('#anchor-drift-sidebar .thread-item')).toHaveCount(0);
-		await expect(page.locator('#anchor-drift-sidebar')).toContainText('No comments yet');
+		const items = page.locator('#anchor-drift-sidebar .thread-item');
+		await expect(items).toHaveCount(1);
+		await expect(items.first()).toHaveAttribute('data-orphaned', 'true');
+		await expect(items.first()).toContainText('Quoted text is not in the document');
+		await expect(items.first()).toContainText('dashboard');
 	});
 
 	test('delete-and-reinsert inside the debounce moves the anchor AND writes it back', async ({
@@ -354,24 +401,72 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 			});
 	});
 
-	test('the same move with a 450ms pause loses the anchor permanently', async ({ page }) => {
-		// Identical edits, identical end state, 450ms apart instead of 0ms — and
-		// no human cuts and pastes in under 300ms. The debounce expires during
-		// the gap, the deferred pass finds no "dashboard" in the document, and
-		// the thread is deleted. Pasting the word back verbatim does not undo
-		// that: there is no thread left to re-anchor.
+	test('the same move with a 450ms pause orphans the anchor, and the late paste RECOVERS it', async ({
+		page
+	}) => {
+		// Identical edits and identical end state to the burst above, 450ms apart
+		// instead of 0ms — the interval a real cut-and-paste takes, since no human
+		// works inside the 300ms debounce. This test is the whole reason cinder#1284
+		// exists: the debounce expires during the gap, the deferred pass finds no
+		// "dashboard" in the document, and the old build deleted the thread on the
+		// spot. Pasting the word back verbatim could not undo that, because there
+		// was no thread left to re-anchor. An ordinary edit ate a comment.
+		//
+		// Now the vanished quote only ORPHANS the anchor. The thread stays in the
+		// bindable array, renders no decoration while its text is missing, and is
+		// retried on every later re-anchoring pass — so the paste that lands 450ms
+		// later restores the anchor completely.
 		await page.getByTestId('drift-move-slow').click();
-		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 0');
+
+		// Proof that the debounce really did expire inside the gap, rather than
+		// the paste sneaking in under it and making this a re-run of the burst
+		// case: the component announced the orphaning. That log is append-only, so
+		// reading it does not race the recovery that follows.
+		await expect(page.getByTestId('announcements')).toContainText(
+			'The text a comment was anchored to is no longer in the document. The comment is kept.'
+		);
+		// Orphaned rather than deleted, even mid-gap.
+		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
 
 		await page.waitForTimeout(LATE_PASTE_SETTLE_MS);
 
 		// The text is back, exactly where the successful burst put it.
 		await expect(page.locator('#anchor-drift p')).toHaveText(/^dashboard The first release/);
-		// The thread is not.
-		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveCount(0);
-		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 0');
-		await expect(page.getByTestId('drift-json')).toHaveText('null');
-		await expect(page.getByTestId('event-log')).toContainText('drift:threaddelete:drift-dashboard');
+		// …and so is the anchor. A decoration again, on the moved word.
+		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveCount(1);
+		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveText('dashboard');
+		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
+		// No deletion event ever fired: removing a thread is the consumer's call.
+		await expect(page.getByTestId('event-log')).toBeEmpty();
+
+		// Recovery is total, not partial: `status` is back to 'anchored' and every
+		// positional field matches what the one-burst move produced. Byte for byte
+		// the same anchor, reached the slow way.
+		await expect
+			.poll(() => anchorJson(page, 'drift-json'))
+			.toEqual({
+				from: 15,
+				to: 24,
+				quote: 'dashboard',
+				prefix: 'Release Plan\n',
+				suffix: ' The first release includes a  and export actions.',
+				status: 'anchored',
+				originalQuote: 'dashboard',
+				lastKnownOffset: 13
+			});
+
+		// The sidebar drops its orphan marking too — the thread is a normal,
+		// placed comment again.
+		await page
+			.getByTestId('instance-drift')
+			.getByRole('button', { name: /comments sidebar/ })
+			.click();
+		const items = page.locator('#anchor-drift-sidebar .thread-item');
+		await expect(items).toHaveCount(1);
+		await expect(items.first()).not.toHaveAttribute('data-orphaned', /.*/);
+		await expect(page.locator('#anchor-drift-sidebar')).not.toContainText(
+			'Quoted text is not in the document'
+		);
 	});
 
 	test('replacing `value` wholesale re-anchors by quote instead of expanding to the document', async ({

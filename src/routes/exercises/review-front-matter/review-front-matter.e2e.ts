@@ -9,8 +9,9 @@ import type { Browser, Page } from '@playwright/test';
 // document, the inner editor is handed only the BODY, and every position the
 // component publishes is therefore shifted by `bodyOffset` (the character
 // length of the block plus delimiters). Recognition, the field controls, the
-// rewrite-on-edit, the anchor remap, and the unified-diff corruption are the
-// same mechanism at four distances, which is why they share a route.
+// rewrite-on-edit, the anchor remap, and the unified diff's handling of the
+// block are the same mechanism at four distances, which is why they share a
+// route.
 //
 // Values are read from `data-value` attributes carrying `JSON.stringify(value)`
 // rather than from element text. Playwright's text matchers collapse whitespace
@@ -531,10 +532,54 @@ test.describe('review front matter: anchors across a front-matter edit', () => {
 test.describe('review front matter: unified diff', () => {
 	let page: Page;
 
-	// The signature of the bug: a line made entirely of dashes, carrying a diff
-	// marker. Markdown's setext-heading underline. It appears in NEITHER input
-	// document, so any diff line matching this was invented by normalization.
+	// The signature of the OLD bug: a line made entirely of dashes, carrying a
+	// diff marker. Markdown's setext-heading underline. It appears in NEITHER
+	// input document, so any diff line matching this was invented by
+	// normalization. Kept as a regression tripwire now that the bug is fixed.
 	const INVENTED_UNDERLINE = /^[-+]-{8,}$/m;
+
+	// The whole patch the fixture's one-key change should produce, byte for byte.
+	// Both `---` fences survive as unchanged context lines, the YAML keeps its
+	// authored spelling, and only `draft:` moves.
+	const EXPECTED_DIFF = [
+		'--- a/document.md',
+		'+++ b/document.md',
+		'@@ -1,6 +1,6 @@',
+		' ---',
+		'+draft: false',
+		' title: Release Plan',
+		'-draft: true',
+		' ---',
+		' ',
+		' # Release Plan',
+		''
+	].join('\n');
+
+	// What `git apply` actually validates, and what the old bug broke: a hunk
+	// header's declared line counts have to match the lines that follow it.
+	// Corrupted output still *looked* like a diff — it claimed `-1,8 +1,8` over
+	// invented content — so a header-only assertion would not have caught it.
+	function hunkCounts(
+		diff: string
+	): Array<{ declared: [number, number]; actual: [number, number] }> {
+		const hunks: Array<{ declared: [number, number]; actual: [number, number] }> = [];
+		for (const line of diff.split('\n')) {
+			const header = /^@@ -\d+,(\d+) \+\d+,(\d+) @@/.exec(line);
+			if (header) {
+				hunks.push({ declared: [Number(header[1]), Number(header[2])], actual: [0, 0] });
+				continue;
+			}
+			const hunk = hunks.at(-1);
+			if (!hunk || line.startsWith('--- ') || line.startsWith('+++ ') || line === '') continue;
+			if (line.startsWith('-')) hunk.actual[0] += 1;
+			else if (line.startsWith('+')) hunk.actual[1] += 1;
+			else if (line.startsWith(' ')) {
+				hunk.actual[0] += 1;
+				hunk.actual[1] += 1;
+			}
+		}
+		return hunks;
+	}
 
 	test.beforeAll(async ({ browser }) => {
 		page = await openFixture(browser);
@@ -544,20 +589,38 @@ test.describe('review front matter: unified diff', () => {
 		await page.close();
 	});
 
-	test('the default normalization re-reads front matter as a thematic break plus a setext heading', async () => {
-		// `generateUnifiedDiff` defaults to `normalizeInputs: true`, which runs
-		// both documents through the markdown pipeline's `normalize()`. That
-		// pipeline has no front-matter step, so the opening `---` becomes a
-		// thematic break and the YAML lines become a paragraph closed by the
-		// second `---` — i.e. a setext heading, whose underline is re-emitted as
-		// a run of dashes as long as the longest line it underlines.
+	test('the default normalization keeps the front-matter block verbatim and normalizes only the body', async () => {
+		// This used to be the route's headline bug. `generateUnifiedDiff` defaults
+		// to `normalizeInputs: true`, and it used to hand the WHOLE document to the
+		// markdown pipeline's `normalize()`. That pipeline has no front-matter
+		// step, so the opening `---` was re-read as a thematic break and the YAML
+		// lines as a paragraph closed by the second `---` — i.e. a setext heading,
+		// whose underline was re-emitted as a run of dashes as long as the longest
+		// line it underlined. The result: 8-dash lines present in neither document,
+		// a blank line injected after the opening fence, lost sequence indentation,
+		// and hunk headers (`@@ -1,8 +1,8 @@`) describing a document that never
+		// existed — a patch `git apply` rejects, from an API whose docs promise
+		// git-appliable output.
+		//
+		// Fixed upstream in `@lostgradient/editor` (the "fix front-matter diffs"
+		// change; no issue number was filed for it) by doing what `DiffViewer`
+		// already did: parse the front matter off, normalize only the BODY, and
+		// re-attach the front matter verbatim. So the fences and the YAML now pass
+		// through untouched and only the body is canonicalized.
 		const rendered = await page.getByTestId('fm-diff-default').getAttribute('data-value');
 		expect(rendered).not.toBeNull();
 		const diff = JSON.parse(rendered!) as string;
-		expect(diff).toMatch(INVENTED_UNDERLINE);
-		// A blank line is inserted after the opening `---` too — normalization
-		// separates the thematic break from the paragraph that follows it.
-		expect(diff).toContain('--- a/document.md\n+++ b/document.md\n@@ -1,8 +1,8 @@\n ---\n \n');
+
+		// Nothing was invented, and no blank line was pushed in after the fence.
+		expect(diff).not.toMatch(INVENTED_UNDERLINE);
+		expect(diff).not.toContain('@@ -1,8 +1,8 @@');
+		// Both delimiters survive as three-dash context lines, in place, with the
+		// only real change between them.
+		expect(diff).toContain('\n ---\n+draft: false\n title: Release Plan\n-draft: true\n ---\n');
+		// And the hunk header describes the documents that actually exist.
+		expect(hunkCounts(diff)).toEqual([{ declared: [6, 6], actual: [6, 6] }]);
+		// Byte-for-byte, since the point is that nothing is rewritten.
+		expect(diff).toBe(EXPECTED_DIFF);
 	});
 
 	test('the invented dash line exists in neither input document', async () => {
@@ -575,7 +638,7 @@ test.describe('review front matter: unified diff', () => {
 		expect(current!).toContain('draft: false');
 	});
 
-	test('`normalizeInputs: false` produces the correct six-line diff instead', async () => {
+	test('`normalizeInputs: false` produces the same six-line diff the default now does', async () => {
 		const rendered = await page.getByTestId('fm-diff-raw').getAttribute('data-value');
 		expect(rendered).not.toBeNull();
 		const diff = JSON.parse(rendered!) as string;
@@ -585,25 +648,45 @@ test.describe('review front matter: unified diff', () => {
 		expect(diff).toContain('@@ -1,6 +1,6 @@');
 		expect(diff).toContain('\n+draft: false\n');
 		expect(diff).toContain('\n-draft: true\n');
+		// This opt-out used to be the ONLY way to get that patch; it was the
+		// control that proved the damage above came from normalization rather than
+		// from the line differ. Now that normalization leaves front matter alone,
+		// the two agree byte for byte on this fixture — which is itself the
+		// clearest statement of the fix, and would break again the moment
+		// `normalize()` got its hands on the block.
+		expect(diff).toBe(EXPECTED_DIFF);
 	});
 
-	test('KNOWN BUG: the `<name>-diff` hidden input ships the corrupted diff', async () => {
+	test('the `<name>-diff` hidden input ships an appliable diff', async () => {
 		// `exportUnifiedDiff()` calls `generateUnifiedDiff(getState())` with no
-		// options, so the hidden form input — the thing that would actually be
-		// POSTed by a surrounding form, and what `getFormData().diff` returns —
-		// carries the normalization damage rather than the true patch. Wrong hunk
-		// line numbers, plus added/removed lines that exist in neither document.
+		// options, so this hidden form input — the thing a surrounding form would
+		// actually POST, and what `getFormData().diff` returns — inherits whatever
+		// the default does. That used to make it the widest blast radius of the
+		// front-matter corruption above: every consumer who submitted the form,
+		// or hit the Copy Diff menu item, shipped a patch with invented dash lines
+		// and hunk headers (`@@ -1,8 +1,8 @@`) that `git apply` refuses. There was
+		// no opt-out here, because the export path passes no options.
+		//
+		// Now that normalization parses the front matter off and re-attaches it
+		// verbatim, the export path inherits the correct patch for free.
 		const hidden = page.locator('input[name="fm-diff-diff"]');
 		await expect(hidden).toHaveCount(1);
 		const value = await hidden.getAttribute('value');
 		expect(value).not.toBeNull();
-		expect(value!).toMatch(INVENTED_UNDERLINE);
-		expect(value!).toContain('@@ -1,8 +1,8 @@');
+		expect(value!).not.toMatch(INVENTED_UNDERLINE);
+		expect(value!).not.toContain('@@ -1,8 +1,8 @@');
+		// The fences reach the form untouched, and the header matches the lines.
+		expect(value!).toContain('\n ---\n+draft: false\n title: Release Plan\n-draft: true\n ---\n');
+		expect(hunkCounts(value!)).toEqual([{ declared: [6, 6], actual: [6, 6] }]);
 
-		// It is byte-identical to the standalone default-options call rendered on
-		// the page, which is what makes the corruption attributable to
+		// Still byte-identical to the standalone default-options call rendered on
+		// the page — which is what attributes the behavior to
 		// `generateUnifiedDiff`'s default rather than to anything the editor did.
 		const rendered = await page.getByTestId('fm-diff-default').getAttribute('data-value');
 		expect(JSON.parse(rendered!)).toBe(value);
+		// And identical to the `normalizeInputs: false` output too: the export
+		// path no longer has a hidden penalty for not being able to pass options.
+		const raw = await page.getByTestId('fm-diff-raw').getAttribute('data-value');
+		expect(JSON.parse(raw!)).toBe(value);
 	});
 });

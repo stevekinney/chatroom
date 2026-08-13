@@ -337,21 +337,32 @@ test.describe('review-ssr-and-a11y: with JavaScript disabled', () => {
 		await context.close();
 	});
 
-	test('the loading placeholder announces itself as visible text (pinned known bug)', async ({
-		browser
-	}) => {
-		// KNOWN BUG, pinned as-is. EditorSkeleton labels its `role="status"`
-		// region with `<span class="sr-only">Loading editor...</span>`, but a bare
-		// `.sr-only` is defined nowhere: Cinder's base stylesheet ships
-		// `.cinder-sr-only`, and EditorSkeleton's own scoped styles do not define
-		// `.sr-only` either. The span therefore lays out in normal flow as a full
-		// width line of visible text.
+	test('the loading placeholder is screen-reader-only, permanently', async ({ browser }) => {
+		// HISTORY. This used to be a pinned bug. EditorSkeleton labelled its
+		// `role="status"` region with `<span class="sr-only">Loading editor...</span>`,
+		// and a bare `.sr-only` is defined NOWHERE in reach: Cinder's base
+		// stylesheet ships `.cinder-sr-only`, and EditorSkeleton's own scoped
+		// styles declared no `.sr-only` rule either. A class no stylesheet defines
+		// hides nothing, so the span laid out in normal flow as a full-width line
+		// of visible body copy — for every user during load, and PERMANENTLY for a
+		// no-JS reader, since the skeleton is what SSR emits and nothing ever
+		// replaces it. The old test pinned that by asserting `position: static`
+		// and a box bigger than 1px.
 		//
-		// This is the LAST survivor of that class of defect in this surface —
-		// ReviewEditor's own announcer used to have exactly the same bug and now
-		// correctly uses `cinder-sr-only` (see the live-region tests below), which
-		// is why this test compares the two side by side rather than asserting a
-		// pixel height.
+		// The skeleton now uses `cinder-sr-only`, the same utility
+		// `review-editor/live-region.svelte` already used (see the live-region
+		// tests below) — so the surface no longer has any instance of this defect.
+		// Upstream carries its own unit guard for it in
+		// `@lostgradient/editor` → `markdown-editor/editor-skeleton.sr-only.test.ts`,
+		// which checks the class is one some stylesheet actually declares rather
+		// than that it is spelled a particular way.
+		//
+		// Asserted here as GEOMETRY, not as a class name, for two reasons. It is
+		// what a user actually experiences, and it survives a refactor of how the
+		// hiding is implemented (a `clip-path` recipe, a `<VisuallyHidden>`
+		// wrapper) while still failing loudly on a regression to a class that
+		// resolves to nothing — that one reverts to `position: static` and a
+		// full-width box.
 		const context = await browser.newContext({ javaScriptEnabled: false });
 		const page = await context.newPage();
 		await page.goto(ROUTE);
@@ -360,32 +371,49 @@ test.describe('review-ssr-and-a11y: with JavaScript disabled', () => {
 		await expect(loadingLine).toHaveText('Loading editor...');
 
 		const geometry = await loadingLine.evaluate((element) => {
+			const styles = getComputedStyle(element);
 			const rect = element.getBoundingClientRect();
 			return {
-				position: getComputedStyle(element).position,
+				position: styles.position,
+				overflow: styles.overflow,
+				display: styles.display,
+				visibility: styles.visibility,
+				ariaHidden: element.getAttribute('aria-hidden'),
 				width: rect.width,
 				height: rect.height
 			};
 		});
-		// A real visually-hidden utility yields `position: absolute` and a 1x1
-		// box. This is neither.
-		expect(geometry.position).toBe('static');
-		expect(geometry.width).toBeGreaterThan(1);
-		expect(geometry.height).toBeGreaterThan(1);
+		// Visually hidden: lifted out of flow and clipped to a 1x1 box, so it
+		// occupies no line of its own and shoves nothing down the page.
+		expect(geometry.position).toBe('absolute');
+		expect(geometry.overflow).toBe('hidden');
+		expect(Math.round(geometry.width)).toBe(1);
+		expect(Math.round(geometry.height)).toBe(1);
+		// …but still ANNOUNCED. The half of the contract a naive "hide it" fix
+		// breaks: `display: none`, `visibility: hidden`, or `aria-hidden` would all
+		// satisfy the geometry above and take the only loading signal a no-JS
+		// reader gets away from assistive tech entirely.
+		expect(geometry.display).not.toBe('none');
+		expect(geometry.visibility).toBe('visible');
+		expect(geometry.ariaHidden).toBeNull();
 
-		// The control: the component's own announcer, in the same document, IS
-		// correctly hidden.
+		// The two hidden regions in this document now agree. ReviewEditor's own
+		// announcer was the reference implementation the skeleton was measured
+		// against while the bug stood; asserting they match keeps that comparison
+		// meaningful rather than deleting it along with the pin.
 		const announcer = await liveRegion(page).evaluate((element) => {
 			const rect = element.getBoundingClientRect();
 			return {
 				position: getComputedStyle(element).position,
-				width: rect.width,
-				height: rect.height
+				width: Math.round(rect.width),
+				height: Math.round(rect.height)
 			};
 		});
-		expect(announcer.position).toBe('absolute');
-		expect(Math.round(announcer.width)).toBe(1);
-		expect(Math.round(announcer.height)).toBe(1);
+		expect(announcer).toEqual({
+			position: geometry.position,
+			width: Math.round(geometry.width),
+			height: Math.round(geometry.height)
+		});
 
 		await context.close();
 	});
@@ -655,10 +683,40 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		await tabTo(page, { role: 'textbox', label: 'Markdown editor' });
 	});
 
-	test('the control bar claims role="toolbar" but exposes four tab stops (pinned known bug)', async ({
+	test('the control bar is a role="group" of four tab stops, and the editor is two', async ({
 		page
 	}) => {
 		await ready(page);
+
+		// HISTORY. This used to be pinned as a bug titled "claims role='toolbar'
+		// but exposes four tab stops". The complaint was sound while it held: a
+		// `role="toolbar"` promises ONE tab stop with arrow-key navigation inside
+		// it, this bar was a plain container that happened to carry the role, and
+		// it owned both a `tablist` and a nested `toolbar` — neither a valid child
+		// of `toolbar`.
+		//
+		// Since `@lostgradient/editor@0.8.1` the bar is `role="group"`, and both
+		// halves of the complaint dissolve with it: a group makes no tab-stop
+		// promise at all, so four stops inside it is correct ARIA, and a group is a
+		// perfectly valid owner of a tablist and a toolbar. The pin outlived the
+		// fix because it only ever COUNTED stops — a regression back to
+		// `role="toolbar"` would not have changed the count, so the pin would have
+		// passed while re-asserting the bug in its own title.
+		//
+		// Rewritten as the structural invariant the counting was always circling:
+		// the container's role and the number of stops it owns are the same claim,
+		// so they are asserted together. The role check is what makes a revert to
+		// `toolbar` fail HERE, at the walk that would otherwise excuse it. (The
+		// same role is pinned by attribute in "the editor view renders ONE control
+		// row" above; that one guards the bar's composition, this one guards what
+		// the role implies for the keyboard.)
+		const bar = page.locator(`#${EDITOR_ID}-controls`);
+		await expect(bar).toHaveAttribute('role', 'group');
+		// The one real toolbar in the composition is the nested formatting group,
+		// and it behaves like one: a single roving stop, which is why four stops
+		// and not seven come out of a bar holding this many buttons.
+		await expect(page.locator(`#${EDITOR_ID}-toolbar`)).toHaveAttribute('role', 'toolbar');
+
 		await page.getByTestId('tab-order-start').focus();
 
 		const stops: ActiveDescriptor[] = [];
@@ -668,13 +726,9 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 			stops.push(current);
 		}
 
-		// KNOWN BUG, pinned as-is. A `role="toolbar"` is supposed to be a single
-		// tab stop with arrow-key navigation inside it; this one is a plain
-		// container that happens to carry the role, so Tab stops four times before
-		// it is done — once for the nested tablist, once for the nested (real,
-		// roving) formatting toolbar, and once each for the two trailing buttons.
-		// The nested `role="toolbar"` is a second problem in the same element:
-		// toolbar is not a valid owner of another toolbar or of a tablist.
+		// Four stops in the bar — the tablist's roving stop, the formatting
+		// toolbar's roving stop, and the two trailing action buttons — then two in
+		// the editor region, for the ProseMirror host and the surface inside it.
 		expect(stops.filter((stop) => stop.inControls)).toHaveLength(4);
 		expect(stops.filter((stop) => stop.inEditorMain)).toHaveLength(2);
 	});

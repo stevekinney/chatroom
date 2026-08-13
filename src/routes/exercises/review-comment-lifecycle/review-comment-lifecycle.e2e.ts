@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { deleteComment, type Thread } from '@lostgradient/editor/comments';
 import { gotoHydrated } from '../hydration';
 
 // Pins the READ and MUTATE halves of ReviewEditor's comment surface: the
@@ -462,26 +463,144 @@ test.describe('review comment lifecycle: deletion is always soft', () => {
 		await expect(page.getByTestId('thread-count')).toHaveText('threads: 4');
 	});
 
-	test('the same reducer call WITHOUT `deletedAt` is a silent no-op', async ({ page }) => {
-		// The likeliest consumer mistake in the whole API. `deleteComment(threads,
-		// t, c, { soft: true })` — no `deletedAt` — does not throw, does not warn,
-		// and does not partially apply. It returns `{ changed: false }` and the
-		// identical array, and the only way to notice is to read `changed`.
+	test('the same reducer call WITHOUT `deletedAt` applies, stamping the time itself', async ({
+		page
+	}) => {
+		// This test used to pin the opposite, and the pin was the point: what it
+		// documented was the likeliest consumer mistake in the whole API.
+		// `deleteComment(threads, t, c, { soft: true })` — no `deletedAt` — used to
+		// return `{ changed: false }` and the identical array. No throw, no warn,
+		// no partial application; the only way to notice was to read `changed`.
+		//
+		// Why that bailout was indefensible rather than merely strict: the delete
+		// the component actually emits is `CommentDeleteEvent`, which carries only
+		// `{ threadId, commentId, soft }`. There is no timestamp on it to forward,
+		// so the obvious wiring — hand the event straight to the reducer —
+		// typechecked, ran, and did nothing, AFTER ReviewEditor had already
+		// announced "Comment deleted" to screen readers. The default path was the
+		// broken one.
+		//
+		// Fixed: a soft delete that omits `deletedAt` now defaults it to
+		// `timestamp()` inside the reducer, which is the only place that can see
+		// the omission. An explicitly supplied `deletedAt` still wins verbatim and
+		// hard delete is untouched — both pinned in the reducer-level test below,
+		// because the page exposes ids but never the stamp values.
 		await expect(page.getByTestId('visible-comment-count')).toHaveText('visible comments: 4');
-
-		await page.getByTestId('delete-without-deletedat').click();
-
-		await expect(page.getByTestId('last-changed')).toHaveText('last reducer changed: false');
-		await expect(page.getByTestId('visible-comment-count')).toHaveText('visible comments: 4');
-		await expect(page.getByTestId('stored-comment-count')).toHaveText('stored comments: 6');
-		await expect(page.getByTestId('soft-deleted-ids')).not.toContainText('c-doc-1');
-		await expect(badge(page)).toHaveText('4');
-		// And nothing was reported: this is a page-side reducer call, so the
-		// component never even hears about it.
-		await expect(page.getByTestId('event-log').locator('li')).toHaveCount(0);
 		await expect(docRow(page).locator('p.thread-preview')).toHaveText(
 			'Overall this reads well. One pass for tone and it ships.'
 		);
+
+		await page.getByTestId('delete-without-deletedat').click();
+
+		await expect(page.getByTestId('last-changed')).toHaveText('last reducer changed: true');
+		await expect(page.getByTestId('visible-comment-count')).toHaveText('visible comments: 3');
+		await expect(badge(page)).toHaveText('3');
+		// The stamp itself is observable, if indirectly: `soft-deleted-ids` is
+		// derived by filtering on `comment.deletedAt`, so `c-doc-1` can only appear
+		// there if the reducer wrote a truthy timestamp onto it — nobody passed one
+		// in.
+		await expect(page.getByTestId('soft-deleted-ids')).toContainText('c-doc-1');
+		// Still soft, not an erasure: the comment is gone from the counts but not
+		// from `threads`.
+		await expect(page.getByTestId('stored-comment-count')).toHaveText('stored comments: 6');
+		await expect(page.getByTestId('thread-count')).toHaveText('threads: 4');
+
+		// `c-doc-1` was `t-doc`'s only comment, so applying the delete turns the
+		// document thread into a ghost: it leaves the sidebar and the visible-thread
+		// count while staying in `threads`. Under the old no-op the row simply
+		// stayed put with its preview intact.
+		await expect(docRow(page)).toHaveCount(0);
+		await expect(page.getByTestId('visible-thread-count')).toHaveText('visible threads: 2');
+
+		// Unchanged by the fix: this is a page-side reducer call, so the component
+		// never hears about it and emits nothing.
+		await expect(page.getByTestId('event-log').locator('li')).toHaveCount(0);
+	});
+});
+
+// The reducer, called directly rather than through the page. The route renders
+// which comments carry a `deletedAt` but never the stamp VALUES, and the whole
+// contract at issue here is about values: what gets defaulted, and what must be
+// left alone. These import the same installed `@lostgradient/editor` build the
+// route runs against, so they pin the shipping behavior, not a reimplementation.
+test.describe('review comment lifecycle: the delete reducer directly', () => {
+	const EXPLICIT_STAMP = '2019-03-04T05:06:07.008Z';
+
+	/** One thread, one live comment. Fresh per call — the helpers are pure, but the fixtures are not shared. */
+	const oneLiveComment = (): Thread[] => [
+		{
+			id: 't-solo',
+			createdAt: '2026-08-01T09:00:00.000Z',
+			anchor: {
+				type: 'document',
+				from: 0,
+				to: 0,
+				quote: '',
+				prefix: '',
+				suffix: '',
+				status: 'anchored'
+			},
+			comments: [
+				{
+					id: 'c-solo',
+					threadId: 't-solo',
+					authorId: 'steve',
+					body: 'Only comment.',
+					createdAt: '2026-08-01T09:00:00.000Z'
+				}
+			]
+		}
+	];
+
+	test('an omitted `deletedAt` is defaulted to now; an explicit one is kept verbatim', () => {
+		// The default half. `Date.now()` brackets the call, so this fails both if
+		// the stamp goes missing (the old no-op) and if it is some fixed or
+		// borrowed value rather than the current time.
+		const before = Date.now();
+		const defaulted = deleteComment(oneLiveComment(), 't-solo', 'c-solo', { soft: true });
+		const after = Date.now();
+
+		expect(defaulted.changed).toBe(true);
+		const stamped = defaulted.threads[0].comments[0].deletedAt;
+		expect(stamped).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		expect(Date.parse(stamped as string)).toBeGreaterThanOrEqual(before);
+		expect(Date.parse(stamped as string)).toBeLessThanOrEqual(after);
+
+		// The half the default must not clobber, and the reason it is asserted
+		// alongside: a consumer with a server clock, a backdated import, or an
+		// undo/redo stack passes its own `deletedAt` and needs it stored
+		// unmodified — not silently re-stamped with the local time.
+		const explicit = deleteComment(oneLiveComment(), 't-solo', 'c-solo', {
+			soft: true,
+			deletedAt: EXPLICIT_STAMP
+		});
+		expect(explicit.changed).toBe(true);
+		expect(explicit.threads[0].comments[0].deletedAt).toBe(EXPLICIT_STAMP);
+	});
+
+	test('the surviving no-ops still no-op, and hard delete still erases without stamping', () => {
+		// Defaulting the timestamp did not turn every soft delete into a change.
+		// An already-soft-deleted comment is still refused — identity-equal array,
+		// `changed: false` — which is what keeps a double delete from overwriting
+		// the original audit timestamp with a later one.
+		const alreadyDeleted = deleteComment(oneLiveComment(), 't-solo', 'c-solo', {
+			soft: true,
+			deletedAt: EXPLICIT_STAMP
+		}).threads;
+		const again = deleteComment(alreadyDeleted, 't-solo', 'c-solo', { soft: true });
+		expect(again.changed).toBe(false);
+		expect(again.threads).toBe(alreadyDeleted);
+		expect(again.threads[0].comments[0].deletedAt).toBe(EXPLICIT_STAMP);
+
+		// Unknown ids are still no-ops rather than defaulted-into-existence.
+		expect(deleteComment(oneLiveComment(), 't-nope', 'c-solo', { soft: true }).changed).toBe(false);
+		expect(deleteComment(oneLiveComment(), 't-solo', 'c-nope', { soft: true }).changed).toBe(false);
+
+		// Hard delete is untouched by the fix: it removes the comment outright, so
+		// there is nothing left to carry a timestamp.
+		const hard = deleteComment(oneLiveComment(), 't-solo', 'c-solo', { soft: false });
+		expect(hard.changed).toBe(true);
+		expect(hard.threads[0].comments).toEqual([]);
 	});
 });
 

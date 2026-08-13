@@ -147,20 +147,22 @@ test.describe.serial('review-state-and-session: imperative state round-trip', ()
 		);
 	});
 
-	test('restoring into a document that no longer contains the quote deletes the thread', async () => {
+	test('restoring into a document that no longer contains the quote ORPHANS the thread', async () => {
 		await expect(page.getByTestId('live-thread-count')).toHaveText('threads: 1');
 
 		await page.getByTestId('restore-quote-gone').click();
 
-		// `comments/types.ts` documents this as the reason there is no
-		// "orphaned" anchor status: when the anchored text is gone the thread is
-		// removed rather than left dangling. The removal reaches the BINDABLE
-		// array (count drops) and fires `onthreaddelete` — before cinder#1266 it
-		// did neither.
-		await expect(page.getByTestId('live-thread-count')).toHaveText('threads: 0');
-		await expect(page.getByTestId('event-log').getByRole('listitem').first()).toHaveText(
-			'threaddelete:thread-release-plan'
-		);
+		// This used to delete the thread, and `comments/types.ts` cited that as
+		// the reason `AnchorStatus` had no "orphaned" member. cinder#1284
+		// reversed it: restoring a saved review against a document whose text has
+		// since changed must not silently destroy the comments. The thread stays
+		// in the BINDABLE array, so the count holds at 1.
+		await expect(page.getByTestId('live-thread-count')).toHaveText('threads: 1');
+		// Removing a thread is the consumer's decision now, so nothing is
+		// reported — the component no longer acts on the user's behalf.
+		await expect(page.getByTestId('event-log').getByRole('listitem')).toHaveCount(0);
+		// Kept, but not placed: an orphaned anchor has no text to highlight, so
+		// it paints no decoration. That is the visible half of the contract.
 		await expect(anchorDecorations(page, 'state-editor')).toHaveCount(0);
 	});
 

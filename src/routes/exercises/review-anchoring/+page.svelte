@@ -277,8 +277,11 @@ Gamma widget delta.`;
 	// Page-owned observation
 	// =====================================================================
 
-	// The callbacks are notification-only. `onthreaddelete` in particular is the
-	// only signal an app gets that the component removed a thread on its behalf.
+	// The callbacks are notification-only. `onthreaddelete` fires only when an
+	// app or the user removes a thread — the component no longer removes one on
+	// its own. A comment whose anchored text disappears is marked `orphaned` and
+	// kept, because deletion and a slow cut-and-paste are indistinguishable
+	// inside the 300ms re-anchoring window (cinder#1284).
 	let events = $state<string[]>([]);
 	const record = (entry: string) => {
 		events = [...events, entry];
@@ -356,9 +359,11 @@ Gamma widget delta.`;
 		insertAt(driftEditor, 'dashboard ', 15);
 	}
 
-	// The same two operations with ~450ms between them. The debounce expires
-	// during the gap, the thread is deleted, and reinserting the identical text
-	// does not bring it back.
+	// The same two operations with ~450ms between them, so the debounce expires
+	// in the gap. The anchor is orphaned mid-move and the thread survives; the
+	// late paste triggers a fresh re-anchoring pass that finds the quote again
+	// and restores the decoration. Before cinder#1284 the thread was deleted at
+	// the halfway point and the restored text had nothing left to re-anchor.
 	function moveAnchoredWordSlowly() {
 		deleteRange(driftEditor, 44, 53);
 		setTimeout(() => insertAt(driftEditor, 'dashboard ', 15), 450);
