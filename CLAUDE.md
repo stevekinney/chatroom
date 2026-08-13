@@ -160,35 +160,85 @@ instead:
 
 ## Filing and resolving upstream issues
 
-When something in an upstream dependency gets in the way, file it — `gh issue create` against
-the repo that owns it, with a clear repro and the requested fix (see #753/#754 above for the
-shape). Don't work around it locally or patch-monkey it here. Route by package:
+**An upstream bug in a package we own is not an obstacle to route around. It is the next task.**
+When you hit one, you file it and then immediately go fix it — switch into that repo, drive the
+change to merge, cut a release, update our dependency here, and only then return to what you
+were doing. Do not defer it, do not batch it for later, and do not continue past it with the
+issue merely filed. A filed issue is the start of the work, not a substitute for it.
 
-- `@lostgradient/cinder` → `stevekinney/cinder`
+Do not work around it locally or patch-monkey it here.
+
+Route by package:
+
+- `@lostgradient/cinder`, `@lostgradient/chat`, or `@lostgradient/editor` → `stevekinney/cinder`
 - `conversationalist` or `armorer` → `stevekinney/agent-bureau` (both packages live in that
   monorepo, under `packages/conversationalist` and `packages/armorer`)
 
-The full loop from filed issue to updated `chatroom` (described here for Cinder; the
-agent-bureau loop is the same shape, just without a `sync:*` script yet — sync manually):
+Anything else is a third-party dependency and this rule does not apply: report it, work around
+it if you must, and ask before filing anything on someone else's project.
 
-1. **File** the issue against the owning repo.
-2. **Fix and merge**, driven from inside `../cinder` (not here) — the `ralph-pipeline` skill runs
-   the worktree → work agent → PR → CI/review-stabilization → merge loop against a task file
-   derived from the open issues.
-3. **Publish** the fix (`@lostgradient/cinder` and/or `@lostgradient/chat`) to npm — chatroom
-   consumes the registry, not `../cinder`'s working tree, so a merged-but-unpublished fix does
-   not reach here.
-4. **Sync**, from `chatroom` — run `bun run sync:cinder` (or invoke the `sync-cinder` skill).
-   It bumps both `@lostgradient/*` packages to their latest published versions
-   (`bun update … --latest`) and re-runs `lint` + `check` + `check:upstream` + `check:peers` here
-   (pass `--full` to also run `test:e2e`). It stops — rather than reporting success — if anything
-   fails after the bump, since a red check right after a sync means a new release broke
-   something here.
-5. **Clean up**, in the same session the sync happens. `check:upstream` failing means a
-   workaround's referenced issue has closed: remove the workaround (marker comment, extra
-   import, cast, whatever it guarded), re-verify, and commit the cleanup — or, if the problem
-   still reproduces despite the closed issue, reopen the issue instead and leave the marker in
-   place. Never leave a stale workaround with a closed-issue marker in the tree.
+### The loop
+
+Described for Cinder; agent-bureau is the same shape, just without a `sync:*` script — sync
+manually.
+
+1. **Leave this tree clean.** Commit or set aside the chatroom work in progress first, so the
+   switch is not sitting on top of a half-finished edit you will have forgotten by the time you
+   come back.
+2. **File** the issue against the owning repo with a clear repro and the requested fix (see
+   #753/#754 above for the shape), then verify it is actually open.
+3. **Work in a git worktree**, never the shared `../cinder` checkout — another session may have
+   it, and `main` being checked out elsewhere will block operations. Note that
+   `node_modules/@lostgradient/<pkg>` symlinks into `packages/<pkg>`, so a delete through that
+   path destroys real source.
+4. **Fix it, with a test that fails without the fix.** Verify that by actually reverting the fix
+   and watching the test fail, then restoring it. A test that passes either way is worse than no
+   test, because it reads as coverage.
+5. **Add a changeset**, since nothing ships without one. Explain why, not just what.
+6. **Open the PR and drive it to green** — full package suites, typecheck, lint, and whatever
+   `components:check` covers. Work the review findings rather than merging over them; treat a
+   round that finds something real as a reason to expect another.
+7. **Merge**, then **release**: the changesets bot opens a `chore: version packages` PR. Its
+   workflows land in `action_required` and need approving
+   (`gh api -X POST repos/<owner>/<repo>/actions/runs/<id>/approve`) before they run. Merge that
+   PR and wait for the `release` workflow on `main` to finish.
+8. **Confirm the publish reached npm** (`npm view <pkg> version`) before syncing. A
+   merged-but-unpublished fix does not reach here — chatroom consumes the registry, not the
+   working tree.
+9. **Sync**, from `chatroom` — `bun run sync:cinder` (or the `sync-cinder` skill). It bumps the
+   `@lostgradient/*` packages to their latest published versions and re-runs `lint` + `check` +
+   `check:upstream` + `check:peers` (pass `--full` to also run `test:e2e`). It stops rather than
+   reporting success if anything fails after the bump, since a red check right after a sync means
+   a new release broke something here.
+10. **Re-run the e2e suite and expect committed tests to fail.** A behavior change arriving as a
+    failing assertion is this repo working as intended. Update those tests to the new contract,
+    and read each failure as a fact about the release rather than noise to silence.
+11. **Clean up**, in the same session. `check:upstream` failing means a workaround's referenced
+    issue has closed: remove the workaround (marker comment, extra import, cast, whatever it
+    guarded), re-verify, and commit the cleanup — or, if the problem still reproduces despite the
+    closed issue, reopen the issue and leave the marker in place. Never leave a stale workaround
+    with a closed-issue marker in the tree.
+12. **Close the issue** with what actually shipped, then resume the original task.
+
+### When the loop cannot finish
+
+If something genuinely blocks it — CI is broken on `main`, publishing is not available, the fix
+needs a decision only the user can make — stop and say so plainly, naming the step that blocked
+and what it would take to unblock. Do not quietly fall back to a local workaround and keep going.
+That is the one case where the work pauses with the issue filed, and it should be visible rather
+than discovered later.
+
+### Before you file, make sure it is real
+
+The point of this repo is finding upstream bugs, which makes a confidently-wrong report cheap to
+produce and expensive to act on. Before filing, reproduce the behavior the way a consumer would
+hit it, and be specific about what you have actually ruled out. Our own test harness is a
+suspect: happy-dom diverges from browsers in ways that look exactly like component bugs, and
+ruling out one layer of a harness is not the same as ruling out the harness. If the claim rests
+on a headless DOM, confirm it in a real browser before filing.
+
+If you file something and later find it does not hold, retract it with the same energy you filed
+it: correct the issue, close it, and revert anything shipped on its account.
 
 **Every local workaround carries an `upstream:` marker.** When a workaround genuinely can't be
 avoided while waiting on a fix, tag it where it lives with a code comment of the form
