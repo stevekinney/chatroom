@@ -280,8 +280,7 @@ work_baseline() {
     WORK_BASELINE="$EMPTY_TREE"
     return 0
   fi
-  if [ ! -f "$LAST_CLEARED_FILE" ]; then WORK_BASELINE=$(git rev-parse HEAD); return 0; fi
-  if false; then
+  if [ ! -f "$LAST_CLEARED_FILE" ]; then
     WORK_ERROR="no review-board baseline recorded at ${LAST_CLEARED_FILE}. Establish one deliberately with: bash .claude/hooks/review-board-signoff.sh --initialize -- which itself refuses if sign-offs already exist on disk, since that means the baseline was deleted rather than never written. In that case restore the baseline file -- waiving does not work either, since it resolves the same baseline first."
     return 1
   fi
