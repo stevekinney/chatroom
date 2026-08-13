@@ -3,7 +3,11 @@
 #
 # Usage:
 #   review-board-signoff.sh --pass <reviewer> [--pass <reviewer> ...] [--note "text"]
+#   review-board-signoff.sh --waive --grounds <ground> --reason "text"
 #   review-board-signoff.sh --initialize
+#
+# Each run truncates the sign-off file, so name all four reviewers in one
+# invocation; sequential --pass runs discard the earlier ones.
 #
 # Every board member must be passed explicitly. There is deliberately no
 # "--all" flag: signing off is four separate assertions, each claiming a
@@ -27,13 +31,21 @@ waive=""
 grounds=""
 reason=""
 while [ $# -gt 0 ]; do
+  # Every value-taking flag checks for its value before shifting twice: `shift 2`
+  # with one argument left FAILS and leaves $# unchanged, so the loop spins
+  # forever at full CPU printing nothing at all.
   case "$1" in
-    --pass) passed+=("${2:-}"); shift 2 ;;
-    --note) note="${2:-}"; shift 2 ;;
+    --pass|--note|--grounds|--reason)
+      if [ $# -lt 2 ]; then echo "$1 needs a value." >&2; exit 1; fi
+      case "$1" in
+        --pass) passed+=("$2") ;;
+        --note) note="$2" ;;
+        --grounds) grounds="$2" ;;
+        --reason) reason="$2" ;;
+      esac
+      shift 2 ;;
     --initialize) initialize=1; shift ;;
     --waive) waive=1; shift ;;
-    --grounds) grounds="${2:-}"; shift 2 ;;
-    --reason) reason="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -43,10 +55,30 @@ if [ -n "$initialize" ]; then
     echo "--initialize records no verdicts; do not combine it with --pass." >&2
     exit 1
   fi
+  if [ -f "$LAST_CLEARED_FILE" ]; then
+    echo "A baseline already exists (${LAST_CLEARED_FILE})." >&2
+    echo "Re-initializing would clear whatever is currently in flight with no reviewer and no record, which is strictly weaker than a waiver. If this work genuinely does not need the board, waive it with --waive --grounds <ground> --reason \"...\" so the call is auditable." >&2
+    exit 1
+  fi
+  compute_work_hash
+  if [ -z "$WORK_ERROR" ] && [ -n "$WORK_HASH" ]; then
+    echo "There is already work in flight relative to HEAD, and --initialize would clear it unrecorded." >&2
+    echo "Commit or set it aside first, or waive it explicitly." >&2
+    exit 1
+  fi
+  if ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    echo "No commit yet, so there is nothing to baseline from. Make the first commit, then initialize." >&2
+    exit 1
+  fi
   mark_cleared || { echo "could not write ${LAST_CLEARED_FILE}" >&2; exit 1; }
   echo "Baseline established at $(git rev-parse --short HEAD)."
   echo "Work from here forward requires a full board sign-off."
   exit 0
+fi
+
+if [ -z "$waive" ] && { [ -n "$grounds" ] || [ -n "$reason" ]; }; then
+  echo "--grounds/--reason only apply to a waiver. Add --waive, or drop them." >&2
+  exit 1
 fi
 
 if [ -n "$waive" ]; then
@@ -56,13 +88,32 @@ if [ -n "$waive" ]; then
   known=""
   for g in "${WAIVER_GROUNDS[@]}"; do [ "$grounds" = "$g" ] && known=1; done
   if [ -z "$known" ]; then
-    echo "--waive needs --grounds naming why the board is disproportionate here." >&2
+    if [ -z "$grounds" ]; then
+      echo "--waive needs --grounds naming why the board is disproportionate here." >&2
+    else
+      echo "unrecognized ground: ${grounds}" >&2
+    fi
     echo "expected one of: ${WAIVER_GROUNDS[*]}" >&2
     exit 1
   fi
   if [ -z "$reason" ]; then
     echo "--waive needs --reason explaining the call in your own words." >&2
     echo "A ground without a reason is a bypass button; with one it is a judgement someone can audit." >&2
+    exit 1
+  fi
+  # The ground is self-asserted and nothing verifies it against the diff, so the
+  # one class of mistake that cannot be undone later -- shipping a rendered
+  # surface with no a11y or hydration review -- is refused outright.
+  forbidden=$(waiver_forbidden_paths)
+  if [ -n "$WORK_ERROR" ]; then
+    echo "Cannot waive: ${WORK_ERROR}" >&2
+    exit 1
+  fi
+  if [ -n "$forbidden" ]; then
+    echo "This work is not waivable: it changes files with a rendered surface." >&2
+    printf '%s\n' "$forbidden" | sed 's/^/  /' >&2
+    echo "Grounds are self-asserted and never checked against the diff, so anything" >&2
+    echo "reaching the browser convenes the board. Run it: /review-board" >&2
     exit 1
   fi
 fi

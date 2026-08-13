@@ -59,6 +59,21 @@ WAIVER_GROUNDS=(
   advisor-approved
 )
 
+# Paths a waiver may never cover, however honestly the ground was chosen.
+# Every ground makes a claim about the diff, and nothing verifies that claim, so
+# a mistaken `formatting-only` on a component was a complete, silent bypass of
+# the a11y and hydration review -- demonstrated with a `role="dialog"` and no
+# focus trap clearing the gate under all five grounds. Anything with a rendered
+# surface convenes the board; work confined to `.claude`, scripts, and config
+# stays waivable, which is the proportionality the waiver exists for.
+WAIVER_NEVER=(
+  'src/'
+  'static/'
+  '.svelte'
+  '.html'
+  '.css'
+)
+
 # Git's empty tree, used as the baseline when HEAD is unborn so a freshly
 # scaffolded project is gated rather than free.
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -129,6 +144,20 @@ compute_work_hash() {
     return 1
   fi
 
+  # Ignore sources that live OUTSIDE the work tree hide new files with no tracked
+  # evidence: `.gitignore` is in scope so adding a rule there is reviewable, but
+  # these are not, so a path listed here is invisible in both directions.
+  local exclude_file
+  exclude_file=$(git rev-parse --git-path info/exclude 2>/dev/null)
+  if [ -n "$exclude_file" ] && [ -f "$exclude_file" ] && grep -qE '^[[:space:]]*[^#[:space:]]' "$exclude_file" 2>/dev/null; then
+    WORK_ERROR="\`.git/info/exclude\` has active rules. It hides files from this gate and is not itself reviewable, unlike .gitignore. Move the rules into .gitignore, or clear them."
+    return 1
+  fi
+  if [ -n "$(git config --get core.excludesFile 2>/dev/null)" ]; then
+    WORK_ERROR="\`core.excludesFile\` is set. It hides files from this gate and lives outside the repo, so neither the rule nor what it hides is reviewable. Unset it with: git config --unset core.excludesFile"
+    return 1
+  fi
+
   # A throwaway index so untracked files diff exactly like tracked ones. The
   # real index is never touched.
   tmpidx=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a temporary index"; return 1; }
@@ -138,9 +167,15 @@ compute_work_hash() {
   # `${root}/.git/index` copy silently did nothing and left the empty file in
   # place, blocking permanently with no way to clear it -- in the workflow this
   # repo uses most. `--git-path` resolves correctly in both layouts.
+  # Deliberately NOT seeded from the real index. Copying it carries the cached
+  # stat data forward under a fresh mtime, which turns off git's racy-clean rule:
+  # entries whose cached mtime is at or after the index's own mtime get
+  # re-compared by content, and a new mtime puts every entry strictly in the past.
+  # With whole-second stat granularity (Apple/Homebrew git has no nanosecond
+  # support) any same-second, same-size, in-place edit then reads as clean and the
+  # gate allows real unreviewed changes. Letting git build the index fresh costs a
+  # full scan and buys correctness, which is the only thing this is for.
   rm -f "$tmpidx"
-  real_index=$(git rev-parse --git-path index 2>/dev/null)
-  if [ -n "$real_index" ] && [ -f "$real_index" ]; then cp "$real_index" "$tmpidx" 2>/dev/null || :; fi
   GIT_INDEX_FILE="$tmpidx" git add -A -N -- . "${WORK_DENY[@]}" >/dev/null 2>&1
   diff=$(GIT_INDEX_FILE="$tmpidx" git diff "$baseline" -- . "${WORK_DENY[@]}" 2>/dev/null)
   local diff_status=$?
@@ -178,4 +213,55 @@ stashed-entries:${stashes}"
     WORK_ERROR="could not hash the working set (is shasum available?)"
     return 1
   fi
+}
+
+# Paths in the current body of work that a waiver may not cover. Prints one per
+# line; empty output means the work is waivable. Fails closed: any state it
+# cannot evaluate returns non-zero with WORK_ERROR set, and the caller must
+# refuse the waiver rather than read the empty list as permission.
+#
+# Deliberately built from its own throwaway index rather than reusing the hash,
+# because the hash is a digest and cannot be asked which files it covered.
+waiver_forbidden_paths() {
+  WORK_ERROR=""
+  # Not `status`: zsh reserves it, and this file gets sourced interactively.
+  local root baseline tmpidx names names_status p pattern
+  root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$root" ]; then WORK_ERROR="not inside a git work tree"; return 1; fi
+
+  # Not $(work_baseline): its WORK_ERROR assignment must survive.
+  work_baseline || return 1
+  baseline="$WORK_BASELINE"
+
+  tmpidx=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a temporary index"; return 1; }
+  rm -f "$tmpidx"
+  local real_index
+  real_index=$(git rev-parse --git-path index 2>/dev/null)
+  if [ -n "$real_index" ] && [ -f "$real_index" ]; then cp "$real_index" "$tmpidx" 2>/dev/null || :; fi
+  GIT_INDEX_FILE="$tmpidx" git add -A -N -- . "${WORK_DENY[@]}" >/dev/null 2>&1
+  names=$(GIT_INDEX_FILE="$tmpidx" git diff --name-only "$baseline" -- . "${WORK_DENY[@]}" 2>/dev/null)
+  names_status=$?
+  rm -f "$tmpidx" 2>/dev/null
+  if [ $names_status -ne 0 ]; then WORK_ERROR="could not list changed paths against the baseline"; return 1; fi
+
+  # Branches and stashes too: a waiver covers the whole body of work, and work
+  # parked elsewhere is part of it.
+  if [ "$baseline" != "$EMPTY_TREE" ]; then
+    while IFS= read -r tip; do
+      [ -z "$tip" ] && continue
+      git merge-base --is-ancestor "$tip" HEAD 2>/dev/null && continue
+      names="${names}
+$(git diff --name-only "$baseline" "$tip" -- . "${WORK_DENY[@]}" 2>/dev/null)"
+    done <<< "$(git for-each-ref --format='%(objectname)' refs/heads 2>/dev/null)"
+  fi
+
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    for pattern in "${WAIVER_NEVER[@]}"; do
+      case "$pattern" in
+        */) case "$p" in "$pattern"*) printf '%s\n' "$p"; break ;; esac ;;
+        *)  case "$p" in *"$pattern") printf '%s\n' "$p"; break ;; esac ;;
+      esac
+    done
+  done <<< "$names"
 }

@@ -32,3 +32,10 @@ be useful as prose, not just as prompts.
 
 State plainly in your summary which checks you performed and which you could not, so a review
 that did not happen is visible as such rather than implied.
+
+Two passages are Claude Code implementation detail and do not apply to you: CLAUDE.md's
+["file was modified" notice](./CLAUDE.md#the-file-was-modified-notice-is-claude-code-not-an-attack)
+section, and the paragraph in `.claude/agents/test-integrity-auditor.md` that describes it. They
+document one harness's notification, not a property of this repo. The rules around them do carry
+over — back up before you break something, restore it, and verify the restore by hash rather than
+by `git status`, which cannot see `node_modules`.

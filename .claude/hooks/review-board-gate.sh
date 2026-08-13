@@ -53,7 +53,15 @@ if [ -f "$signoff" ]; then
   # A waiver clears the gate without a board, on one of the recorded grounds.
   # Parsed from the verdict block for the same reason the PASS lines are: free
   # text after the sentinel must never be able to forge one.
-  if printf '%s\n' "$verdicts" | grep -qE '^WAIVED: [a-z-]+$'; then exit 0; fi
+  # The ground must be one of the recorded set. Matching any `[a-z-]+` token let
+  # the deciding component accept grounds the writing component would reject,
+  # so the fixed list was enforced on only one of the two paths.
+  waived_ground=$(printf '%s\n' "$verdicts" | sed -n 's/^WAIVED: \([a-z-]*\)$/\1/p' | head -1)
+  if [ -n "$waived_ground" ]; then
+    for g in "${WAIVER_GROUNDS[@]}"; do
+      [ "$waived_ground" = "$g" ] && exit 0
+    done
+  fi
   missing=()
   for r in "${REVIEW_BOARD[@]}"; do
     [ "$(printf '%s\n' "$verdicts" | grep -cE "^${r}: PASS$")" = "1" ] || missing+=("$r")
