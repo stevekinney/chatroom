@@ -144,19 +144,27 @@ compute_work_hash() {
     return 1
   fi
 
-  # Ignore sources that live OUTSIDE the work tree hide new files with no tracked
-  # evidence: `.gitignore` is in scope so adding a rule there is reviewable, but
-  # these are not, so a path listed here is invisible in both directions.
-  local exclude_file
-  exclude_file=$(git rev-parse --git-path info/exclude 2>/dev/null)
-  if [ -n "$exclude_file" ] && [ -f "$exclude_file" ] && grep -qE '^[[:space:]]*[^#[:space:]]' "$exclude_file" 2>/dev/null; then
-    WORK_ERROR="\`.git/info/exclude\` has active rules. It hides files from this gate and is not itself reviewable, unlike .gitignore. Move the rules into .gitignore, or clear them."
-    return 1
-  fi
-  if [ -n "$(git config --get core.excludesFile 2>/dev/null)" ]; then
-    WORK_ERROR="\`core.excludesFile\` is set. It hides files from this gate and lives outside the repo, so neither the rule nor what it hides is reviewable. Unset it with: git config --unset core.excludesFile"
-    return 1
-  fi
+  # Files hidden by ignore sources OUTSIDE the work tree are hashed explicitly.
+  # `.gitignore` is in scope, so a rule added there is reviewable; `.git/info/exclude`
+  # and `core.excludesFile` are not, and a path listed in either is invisible to
+  # `git add -A` with no artifact anywhere. Refusing to run whenever they exist was
+  # the wrong call -- a global excludes file is a normal setup, and a gate that
+  # blocks on it is one people disable. Seeing through them costs a bounded
+  # enumeration and removes the hiding place instead.
+  local externally_hidden
+  externally_hidden=$(
+    git status --porcelain --ignored=matching -- . \
+      ':(exclude)node_modules' ':(exclude).svelte-kit' ':(exclude)dist' ':(exclude)build' \
+      ':(exclude)test-results' ':(exclude)playwright-report' ':(exclude).turbo' 2>/dev/null |
+      sed -n 's/^!! //p' |
+      while IFS= read -r f; do
+        src=$(git check-ignore -v -- "$f" 2>/dev/null | cut -d: -f1)
+        case "$src" in
+          ''|.gitignore|*/.gitignore) ;;
+          *) [ -f "$f" ] && { printf 'externally-hidden:%s\n' "$f"; cat -- "$f" 2>/dev/null; } ;;
+        esac
+      done
+  )
 
   # A throwaway index so untracked files diff exactly like tracked ones. The
   # real index is never touched.
@@ -203,11 +211,11 @@ compute_work_hash() {
   [ "${stashes:-0}" != "0" ] && extra="${extra}
 stashed-entries:${stashes}"
 
-  if [ -z "$diff" ] && [ -z "$extra" ]; then return 0; fi
+  if [ -z "$diff" ] && [ -z "$extra" ] && [ -z "$externally_hidden" ]; then return 0; fi
 
   # Seeded with identity so the stream is never empty and never portable
   # between repos or baselines.
-  WORK_HASH=$(printf 'repo:%s\nbaseline:%s\n%s\n%s\n' "$root" "$baseline" "$diff" "$extra" |
+  WORK_HASH=$(printf 'repo:%s\nbaseline:%s\n%s\n%s\n%s\n' "$root" "$baseline" "$diff" "$extra" "$externally_hidden" |
     shasum -a 256 2>/dev/null | cut -d' ' -f1)
   if [ -z "$WORK_HASH" ]; then
     WORK_ERROR="could not hash the working set (is shasum available?)"
