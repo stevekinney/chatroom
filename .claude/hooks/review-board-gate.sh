@@ -25,7 +25,23 @@ cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null ||
 command -v git >/dev/null 2>&1 ||
   emit_block "The review-board gate needs git to determine what changed, and git is not available."
 
-git rev-parse --git-dir >/dev/null 2>&1 || exit 0 # genuinely not a repo: nothing to gate
+# `|| exit 0` here is safe ONLY for "this is genuinely not a git repository" --
+# every other reason `git rev-parse --git-dir` can fail (a corrupt .git, a
+# permissions problem, git itself misbehaving despite `command -v git`
+# succeeding above) must block, per this file's own fail-closed rule. A bare
+# `|| exit 0` cannot tell those apart: a shim that fails only this one git
+# call let the gate emit nothing and exit 0 over an unreviewed component,
+# where an unshimmed run blocks. Git's own "not a git repository" message is
+# what actually distinguishes the two, so match on it rather than trusting
+# any nonzero exit to mean the same thing.
+if ! git_dir_check=$(git rev-parse --git-dir 2>&1); then
+  case "$git_dir_check" in
+    *"not a git repository"*) exit 0 ;; # genuinely not a repo: nothing to gate
+    *) emit_block "The review-board gate could not determine whether this is a git repository: ${git_dir_check}
+
+Until that is resolved the work cannot be marked complete." ;;
+  esac
+fi
 
 helper="$(dirname "${BASH_SOURCE[0]}")/work-hash.sh"
 [ -r "$helper" ] ||

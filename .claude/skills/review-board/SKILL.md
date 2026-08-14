@@ -76,10 +76,21 @@ path visible, not independent triggers: a `notes.txt` hidden any of those ways i
 The build config that decides what SSRs is also refused. Separately and unconditionally,
 **any stash at all refuses a waiver** — the guard cannot see inside one, so it
 refuses rather than measuring less than it claims, even for a stash holding
-nothing that renders. A waiver also advances the baseline, so waived work
-becomes the new cleared point. The grounds are self-asserted and nothing checks them against the
-diff, so this is the one class of mistake the script refuses to let you make rather than trusting
-you not to. If you hit that refusal, convene the board; it is not a bug.
+nothing that renders. **An ignored directory that exceeds the file cap also refuses
+unconditionally** — a waiver cannot verify what it did not finish reading, so it refuses rather
+than silently proceeding with a truncated, possibly-incomplete file list. **A gitlink (embedded
+repo) carrying ANY untracked, modified, or ignored-but-present content also refuses unconditionally**
+— rather than try to classify what's inside it, which runs into a real ambiguity (see CLAUDE.md's
+"Known, disclosed limitations" for why), the waiver refuses the whole gitlink outright the moment
+it has anything unverifiable in it. **A literal newline byte in a hidden or ignored path also
+refuses unconditionally** — the byte cannot be represented safely on the newline-delimited channels
+this file's helpers use internally, so `compute_work_hash` sets `WORK_ERROR` and refuses outright
+rather than silently dropping the path from what it measures, and a waiver inherits that same
+refusal since it calls the same helper. A waiver also advances
+the baseline, so waived work becomes the new cleared point. The grounds are self-asserted and
+nothing checks them against the diff, so this is the one class of mistake the script refuses to
+let you make rather than trusting you not to. If you hit any of these refusals, convene the board;
+it is not a bug.
 
 `advisor-approved` is the escape hatch for being stuck: you may ask the user at any point what to
 do to keep moving, and their answer is legitimate grounds. Prefer asking over grinding, and prefer

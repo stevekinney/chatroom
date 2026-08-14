@@ -6,7 +6,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in */CLAUDE.md|CLAUDE.md) jq -n '{systemMessage: \"Reminder: CLAUDE.md changed \u2014 verify AGENTS.md still points at it, and check whether new content needs anything called out separately for Codex or other agent CLIs.\", hookSpecificOutput: {hookEventName: \"PostToolUse\", additionalContext: \"CLAUDE.md was just edited. AGENTS.md is a two-line pointer to CLAUDE.md \u2014 confirm it still resolves correctly, and flag anything Codex-specific that this change should surface.\"}}' ;; esac; } 2>/dev/null"
+						"command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in */CLAUDE.md|CLAUDE.md) jq -n '{systemMessage: \"Reminder: CLAUDE.md changed \u2014 verify AGENTS.md still points at it, and check whether new content needs anything called out separately for Codex or other agent CLIs.\", hookSpecificOutput: {hookEventName: \"PostToolUse\", additionalContext: \"CLAUDE.md was just edited. AGENTS.md points at CLAUDE.md but also carries its own review-board-portability section \u2014 confirm it still resolves correctly, and flag anything Codex-specific that this change should surface.\"}}' ;; esac; } 2>/dev/null"
 					},
 					{
 						"type": "command",

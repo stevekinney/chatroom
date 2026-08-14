@@ -300,7 +300,76 @@ that is dirty **or detached**, and a dirty submodule or embedded repo — all th
 none can be enumerated from here, and the submodule check keys on gitlinks rather than on
 `.gitmodules`, which an embedded `git init` never creates; and a symlink under `src/` or `static/`
 resolving outside the reviewable set, in either the file or directory shape, which let a 40-byte
-blob stand in for an unbounded surface.
+blob stand in for an unbounded surface. The gitlink check reads a MATERIALIZED throwaway index, not
+the real one, since an embedded repo never `git add`-ed to the superproject produced no entry
+there at all — a signed-off tree's embedded content could be rewritten afterward with nothing to
+catch it. That same materialized index also force-adds any path matching `.gitignore` that was
+`git add -f`-ed anyway (`add_ignored_tracked` in `work-hash.sh`): a plain `git add -A -N` on a
+FRESH index has no notion of what the real index already tracks, so such a path was simply absent
+from every throwaway index, and two commits force-adding completely different content to it hashed
+identically — a real collision, not just an omission, on every diff this file computes. And an
+embedded repo's own config can lie about its own state the same way an external ignore source can
+about this one's: `status.showUntrackedFiles=no` set inside it, or its own committed `.gitignore`,
+hid a new unreviewed component from `git status` entirely with no dirty flag to catch — both are
+forced past for the OUTER repo, one level of embedding deep (`-c status.showUntrackedFiles=all`,
+and ignored-but-present content run through the same artifact check the rest of this file uses, so
+the embedded repo's own `node_modules` doesn't re-brick the gate the way this repo's own once did).
+The waiver side of the same hole is closed differently: rather than classify an embedded repo's
+ignored content, a waiver now refuses outright the moment a gitlink has ANY of it, since
+individually verifying it runs into the same `is_artifact` path-shape problem named below.
+
+`-c core.quotePath=false`, used throughout this file to read a non-ASCII path correctly, is NOT
+the same guarantee as `-z`: git still C-quotes a literal `"`, `\`, a control byte, or a newline
+regardless of that setting, and three `git status --porcelain --ignored=matching` call sites relied
+on it alone against LINE-based output — a quoted line broke the `sed`-based extraction downstream,
+and a whole ignored directory silently vanished from the hash with no refusal at all. Closed with a
+shared function, `ignored_matching_paths` in `work-hash.sh`, that reads `-z` output via NUL-delimited
+`read -d ''` instead. Index bits (`skip-worktree`/`assume-unchanged`) are also now checked ONE LEVEL
+into a linked worktree or an embedded gitlink, not just in the outer repo's own index — git's index
+is per-worktree and per-embedded-repo, so the same bits set inside either hide a modification from
+THAT repo's own status the identical way they do outside.
+
+A path containing a literal NEWLINE byte is the one case `-z` alone cannot fully carry through: this
+file's enumerations still emit paths newline-joined for compatibility with every existing consumer,
+so such a path would corrupt a re-serialization step downstream even though it was read correctly at
+the point of NUL-delimited parsing. Rather than attempt full NUL-safety through every consumer, the
+gate detects this specific condition at its two enumeration points (`ignored_matching_paths` and
+`walk_hidden_dir`, both in `work-hash.sh`) and refuses outright via a shared sentinel
+(`NEWLINE_IN_PATH_SENTINEL`) — the fail-closed direction, not a silent hash collision.
+
+**Known, disclosed limitations — not fixed, not silently unmentioned:**
+
+- `is_artifact`, applied to a gitlink's ignored-but-present content, sees paths relative to the
+  GITLINK's own root, not the outer repo's. That's the right answer for an embedded `node_modules`
+  (an artifact wherever it sits) and the wrong one for an embedded route that happens to share a
+  name with an `ARTIFACT_DIRS` entry — an embedded `build/+page.svelte`, ignored by that repo's own
+  `.gitignore`, reads as an artifact and two completely different bodies of it hash identically.
+  Prefixing the outer path fixes that and breaks the `node_modules` case instead, so the two
+  directions are not both satisfiable by this function as designed; see the comment above
+  `gitlinks=` in `work-hash.sh`.
+- None of this recurses, but narrower than "any nesting is invisible": an ordinarily DIRTY nested
+  gitlink (uncommitted changes, no ignore rule involved) still surfaces, because git's own
+  `--ignore-submodules=none` reporting propagates a nested submodule's dirtiness up through each
+  level on its own. What actually escapes is content the NESTED repo's own `.gitignore` hides, OR an
+  index bit set inside it — that gitlink-within-a-gitlink, or a gitlink embedded inside a linked
+  worktree, reads clean at every level this file enumerates, since neither the ignored-content scan
+  nor the index-bits check (the fixes for the one-level case above) are applied recursively. A stash
+  taken INSIDE an embedded repo is likewise outside what the outer stash count sees.
+
+A configured **clean filter** (`filter.<name>.clean`, wired to a path via `.gitattributes`) is a
+different class from all of the above: it doesn't hide a path from enumeration, it transforms a
+path's content before ANY diff is computed against it, including inside the throwaway index. A
+clean command that reconstructs whatever was last reviewed makes `git diff` report no change at
+all while the real file is completely different — `--no-ext-diff --no-textconv` guards external
+diff drivers and textconv, but neither touches this, and there is no `--no-filters` to ask for the
+untransformed comparison. The gate now refuses outright the moment any path in scope — tracked or
+not — carries a filter attribute with a configured `clean` command, since it cannot verify what
+such a path really changed. No path in this repo is wired to a filter via `.gitattributes` today,
+so the refusal is preventive — though `filter.lfs.clean` is already present in this machine's
+global git config, so `git lfs track` alone is enough to trip it. The refusal is also, deliberately,
+not selective about _which_ filter (Git LFS included), because a constant-output clean command and
+a legitimately content-derived one are indistinguishable from here without running arbitrary,
+untrusted commands to find out.
 
 An in-tree `.gitignore` rule no longer grants a blanket pass: the carve-out was sound only for
 _new_ rules, and this repo's own unanchored `tmp/` and `test-results` match under `src/`. Two
@@ -328,18 +397,23 @@ gate blocked anyway, and every retry wrote two more sign-off files that moved th
 from the one just approved. There is now an explicit check for that, so the class fails with a
 message instead of a loop.
 
-Run `bash .claude/hooks/review-board-gate.test.sh` after touching any of this — 72 probes, not
+Run `bash .claude/hooks/review-board-gate.test.sh` after touching any of this — 108 probes, not
 wired into `bun run test`, so it only runs when someone types it.
 
 Do not read a green suite as an audit ledger. Most probes have been shown to fail when the thing
 they name is broken, but not all of them, and the set that has is not identifiable from the file.
 Two failure modes have shipped repeatedly and both look identical to coverage: a probe that passes
-through a fallback branch rather than the guard it names — a `.cjs` config-symlink probe does
-exactly that today, because `docs/` left `WORK_DENY`, and a symlink probe asserted only that an _untracked_
-link blocks, which is true with the guard deleted — and a probe whose fixture never reaches the
-code it targets, which is why the waiver-side arms were unpinned for several rounds while their
-hash-side twins were covered. One probe is labelled `[unproven]` in its own name; that label marks
-a guard nobody has found a discriminating fixture for, not the only unverified probe.
+through a fallback branch rather than the guard it names, and a probe whose fixture never reaches
+the code it targets. A round of review found three live instances of the first — the `.cjs`
+config-symlink probe and both `src/` → `docs/` symlink probes were asserting only that an
+_untracked_ link blocks (true with the guard deleted), because they pointed at `docs/`, which left
+`WORK_DENY` once the bundler turned out to resolve imports into it and so is ordinary reviewable
+work the gate blocks on regardless. Retargeted at real `WORK_DENY` paths, with no fallback branch
+left to pass through. The second failure mode is why the waiver-side arms were unpinned for
+several rounds while their hash-side twins were covered. One probe is labelled `[unproven]` in its
+own name; that label marks a guard nobody has found a discriminating fixture for, not the only
+unverified probe — treat every probe in this file as a claim to re-verify by deleting its guard,
+not as settled coverage.
 
 **A Stop hook cannot police its own disablement, so do not rely on the gate to catch its own
 neutering.** `review-board-gate.sh` sources `work-hash.sh` before it computes scope, so an edit
@@ -395,10 +469,20 @@ that session's own tool calls, and only when the write actually changes content 
 mtime. A file the session never touched, a no-op rewrite, or a file read with `offset`/`limit`
 all produce nothing. So "no notice" is not evidence that nothing changed.
 
-**Subagents appear not to receive these at all.** Across every transcript in this project, every such record is in a main session and none is in
-a subagent, and two reviewers independently ran
-the out-of-band write as subagents and got nothing. If you are a subagent, expect zero — and
-treat one that does arrive as worth reporting rather than as routine.
+**Subagents mostly don't receive these, but not universally — three observed cases, stated
+plainly rather than as one unified rule, since a round-7 attempt at a single mechanism turned
+out to be contradicted by its own neighboring case.** A subagent's own out-of-band write (its
+own Bash `cp` restoring a file it had read) produces no notice to that subagent — two reviewers
+independently confirmed this, and it is still the load-bearing case for a subagent auditing its
+own restores. A main session's own out-of-band write (the identical `cp` shape, run by the main
+session instead) does produce a notice, in that main session. And a round-7 contract-auditor
+subagent received a notice for `CLAUDE.md` while the orchestrating main session concurrently
+edited it through an ordinary Edit call — a third shape again, distinct from the first two. Do
+not generalize these into "in-band vs out-of-band" or "subagent vs main" as if either alone
+decided it; both have now been shown to have an exception. If you are a subagent and a notice
+arrives, it is not automatically evidence of tampering — check whether the orchestrating session
+could plausibly have made an ordinary edit to that file, and verify the content the same way as
+always: by hash or by re-deriving it, not by trusting the snippet.
 
 Two things trigger it in a main session:
 
