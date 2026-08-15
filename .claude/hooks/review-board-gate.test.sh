@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Probes for the review board gate, run against a throwaway repo.
 #
-# The gate is the only thing standing between unreviewed work and "done", and it
-# has shipped defects in both directions: fail-OPEN (an unborn HEAD baselining to
+# NOTHING CURRENTLY INVOKES THE GATE. The `Stop` entry was removed from
+# `.claude/settings.json` on 2026-08-14, briefly replaced by a narrower
+# `PreToolUse` entry, and then removed again; the gate's own first line says so,
+# and `CLAUDE.md` records the sequence. These probes therefore protect a
+# mechanism kept on hand rather than one in force — which is exactly why they are
+# worth keeping green, and exactly why this header no longer claims the gate is
+# "the only thing standing between unreviewed work and 'done'". That is now
+# discipline, not machinery.
+#
+# When it was wired, it shipped defects in both directions: fail-OPEN (an unborn HEAD baselining to
 # the literal string "HEAD"; a waiver clearing a component with no reviewer; an
 # absolute `core.excludesFile` misread as in-tree) and fail-CLOSED (a linked
 # worktree's `.git`-as-file blocking permanently with no way to clear it; a
@@ -87,7 +95,7 @@ new_repo() {
 
 # Returns 0 for allow, 1 for block, 2 for "the gate did not run".
 #
-# The gate is a Stop hook: it exits 0 either way and signals through the JSON it
+# The gate exits 0 either way and signals through the JSON it
 # prints, so exit status alone is not the answer. CLAUDE_PROJECT_DIR is pinned to
 # the sandbox because the gate reads it and would otherwise evaluate the real
 # repo. And absence of a refusal is not evidence of approval -- a gate replaced
@@ -100,13 +108,27 @@ new_repo() {
 # else depends on -- production code carrying a hazard so the tests could watch
 # it. Comparing the sandbox copy against the source gets the same
 # discrimination for nothing: a stubbed or corrupted gate no longer matches.
+# The gate is a PreToolUse hook now, not a Stop hook: it reads the tool call from
+# stdin and only evaluates the work when the call targets ROADMAP.md or
+# ROADMAP.local.md. Every probe below therefore has to hand it a tool call that
+# names a gated file, or the gate correctly exits early having decided the call
+# is none of its business -- which is an ALLOW, and silently turned all 46 block
+# probes green-to-red when the trigger changed. Feeding `/dev/null` (the old
+# Stop-hook shape) is no longer a valid way to ask this script anything.
+#
+# The relative form is deliberate: the gate accepts `ROADMAP.md` as well as
+# `$PWD/ROADMAP.md`, and the relative spelling keeps these fixtures independent
+# of the sandbox's temp path. The file itself never has to exist -- the gate
+# string-matches the path before it touches the filesystem.
+GATE_STDIN='{"tool_input":{"file_path":"ROADMAP.md"}}'
+
 gate() {
   local out rc
   cmp -s "$1/.claude/hooks/review-board-gate.sh" "$HOOKS_SRC/review-board-gate.sh" || return 2
   bash -n "$1/.claude/hooks/review-board-gate.sh" 2>/dev/null || return 2
-  out=$(cd "$1" && CLAUDE_PROJECT_DIR="$1" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+  out=$(cd "$1" && CLAUDE_PROJECT_DIR="$1" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
   rc=$?
-  printf '%s' "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' && return 1
+  printf '%s' "$out" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' && return 1
   [ "$rc" -eq 0 ] || return 2
   return 0
 }
@@ -714,7 +736,7 @@ rm -rf "$d"
 d=$(new_repo) || exit 1
 echo "x" > "$d/src/routes/+page.svelte"
 printf '.claude/.review-board-state/\n' >> "$d/.git/info/exclude"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 if printf '%s' "$out" | grep -q "would make every sign-off invalidate itself"; then
   ok "an externally-ignored state dir is diagnosed, not livelocked"
 else
@@ -765,7 +787,7 @@ ext=$(mktemp -d) || exit 1
 printf '.claude/.review-board-state/\n' > "$ext/.gitignore"
 (cd "$d" && git config core.excludesFile "$ext/.gitignore")
 echo "x" > "$d/src/routes/+page.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 if printf '%s' "$out" | grep -q "would make every sign-off invalidate itself"; then
   ok "an absolute excludes file hiding the state dir is diagnosed"
 else
@@ -788,7 +810,7 @@ for loc in "tmp" "src/routes/tmp"; do
   mkdir -p "$d/$loc"
   i=1; while [ "$i" -le 800 ]; do printf 'n\n' > "$d/$loc/a$(printf '%04d' $i).md"; i=$((i+1)); done
   printf '<div role="dialog" aria-modal="true"></div>\n' > "$d/$loc/zzz-late.svelte"
-  out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+  out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
   if printf '%s' "$out" | grep -q "hides more than"; then
     ok "a directory past the cap blocks by name ($loc)"
   else
@@ -805,8 +827,8 @@ rm -f "$d/.claude/.review-board-state/last-cleared"
 mkdir -p "$d/tmp"
 i=1; while [ "$i" -le 20 ]; do printf 'n\n' > "$d/tmp/a$i.md"; i=$((i+1)); done
 printf '<div role="dialog"></div>\n' > "$d/tmp/zzz.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
-if ! printf '%s' "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"'; then
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
+if ! printf '%s' "$out" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
   no "a directory under the cap still blocks on its contents" "gate allowed"
 elif printf '%s' "$out" | grep -q "hides more than"; then
   no "a directory under the cap still blocks on its contents" "blocked by truncation, not contents — the bound ate the feature"
@@ -823,7 +845,7 @@ rm -f "$d/.claude/.review-board-state/last-cleared"
 (cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-signoff.sh --initialize) >/dev/null 2>&1
 mkdir -p "$d/tmp/inner" && printf '<div role="dialog"></div>\n' > "$d/tmp/inner/C.svelte"
 chmod 000 "$d/tmp"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 chmod 755 "$d/tmp"
 printf '%s' "$out" | grep -q "cannot be read" &&
   ok "an unreadable ignored directory blocks rather than reading as empty" ||
@@ -910,8 +932,8 @@ rm -rf "$d" "$ext"
 d=$(new_repo) || exit 1
 printf '<div role="dialog"></div>\n' > "$d/src/routes/+page.svelte"
 out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" GIT_EXTERNAL_DIFF=/usr/bin/true \
-  bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
-printf '%s' "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' &&
+  bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
+printf '%s' "$out" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' &&
   ok "GIT_EXTERNAL_DIFF cannot empty the hash" ||
   no "GIT_EXTERNAL_DIFF cannot empty the hash" "gate was silent"
 rm -rf "$d"
@@ -991,7 +1013,7 @@ for mode in 400 000; do
   mkdir -p "$d/tmp/inner"
   printf '<div role="dialog" aria-modal="true"></div>\n' > "$d/tmp/inner/C.svelte"
   chmod "$mode" "$d/tmp/inner"
-  out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+  out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
   chmod 755 "$d/tmp/inner"
   printf '%s' "$out" | grep -q "cannot be read" &&
     ok "a chmod $mode directory inside an ignored tree blocks" ||
@@ -1006,7 +1028,7 @@ d=$(new_repo) || exit 1
 rm -f "$d/.claude/.review-board-state/last-cleared"
 (cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-signoff.sh --initialize) >/dev/null 2>&1
 mkdir -p "$d/tmp"; printf '<div role="dialog"></div>\n' > "$d/tmp/C.svelte"; chmod 000 "$d/tmp/C.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 chmod 644 "$d/tmp/C.svelte"
 printf '%s' "$out" | grep -q "cannot be read" &&
   ok "an unreadable file inside an ignored tree blocks" ||
@@ -1038,7 +1060,7 @@ rm -f "$d/.claude/.review-board-state/last-cleared"
 (cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-signoff.sh --initialize) >/dev/null 2>&1
 mkdir -p "$d/tmp/a/b/c/e/f/g/h/i/j/k/l/m"
 printf '<div role="dialog" aria-modal="true"></div>\n' > "$d/tmp/a/b/c/e/f/g/h/i/j/k/l/m/+page.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 printf '%s' "$out" | grep -q "nests deeper" &&
   ok "a component below the walk's depth bound blocks" ||
   no "a component below the walk's depth bound blocks" "gate did not refuse on depth"
@@ -1090,7 +1112,7 @@ mkdir -p "$d/src/lib/vendor"
 signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
   --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
 printf '<div role="dialog" aria-modal="true">rewritten</div>\n' > "$d/src/lib/vendor/V.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 printf '%s' "$out" | grep -q "embedded repository" &&
   ok "a rewrite behind an untracked gitlink is not silently cleared" ||
   no "a rewrite behind an untracked gitlink is not silently cleared" "gate allowed"
@@ -1175,7 +1197,7 @@ chmod +x "$nuke"
 git -C "$d" config "filter.nuke.clean" "$nuke"
 printf '*.svelte filter=nuke\n' >> "$d/.git/info/attributes"
 printf '<div role="dialog" aria-modal="true">rewritten, unreviewed</div>\n' > "$d/src/routes/+page.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 printf '%s' "$out" | grep -q "clean filter" &&
   ok "a rewrite hidden behind a clean filter is not silently cleared" ||
   no "a rewrite hidden behind a clean filter is not silently cleared" "gate allowed"
@@ -1268,7 +1290,7 @@ chmod +x "$nuke"
 git -C "$d" config "filter.nuke.clean" "$nuke"
 printf '*.svelte filter=nuke\n' >> "$d/.git/info/attributes"
 printf '<div role="dialog" aria-modal="true">rewritten, unreviewed</div>\n' > "$d/src/routes/+page.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 printf '%s' "$out" | grep -q "clean filter" &&
   ok "a newline-containing decoy path does not blind the clean-filter check" ||
   no "a newline-containing decoy path does not blind the clean-filter check" "gate allowed: $out"
@@ -1686,9 +1708,9 @@ fi
 exec /usr/bin/git "$@"
 SHIM
 chmod +x "$fakebin/git"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$fakebin:$PATH" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$fakebin:$PATH" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 rm -rf "$fakebin"
-printf '%s' "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' &&
+printf '%s' "$out" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' &&
   ok "git rev-parse --git-dir failing for a non-repo reason still blocks" ||
   no "git rev-parse --git-dir failing for a non-repo reason still blocks" "gate output: $out"
 rm -rf "$d"
@@ -1697,7 +1719,7 @@ rm -rf "$d"
 # case `git rev-parse --git-dir` failing is actually supposed to allow.
 d=$(mktemp -d) || exit 1
 assert_sandbox "$d" >/dev/null
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash "$HOOKS_SRC/review-board-gate.sh" </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash "$HOOKS_SRC/review-board-gate.sh" <<<"$GATE_STDIN" 2>&1)
 [ -z "$out" ] &&
   ok "a directory that is genuinely not a git repo still produces no output" ||
   no "a directory that is genuinely not a git repo still produces no output" "gate output: $out"
@@ -1771,7 +1793,7 @@ d=$(new_repo) || exit 1
 mkdir -p -- "$d/-lab/secret"
 printf '<div role="dialog" aria-modal="true">never reviewed</div>\n' > "$d/-lab/secret/Modal.svelte"
 chmod 000 "$d/-lab/secret"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh </dev/null 2>&1)
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
 chmod 755 "$d/-lab/secret"
 printf '%s' "$out" | grep -q "cannot be read" &&
   ok "a dash-prefixed hidden directory's unreadable subdirectory blocks" ||
@@ -1871,6 +1893,82 @@ printf '%s' "$out" | grep -q "vendor" &&
   ok "waiver_forbidden_paths itself catches an untracked component behind an embedded showUntrackedFiles=no" ||
   no "waiver_forbidden_paths itself catches an untracked component behind an embedded showUntrackedFiles=no" "$out"
 rm -rf "$d"
+# ---------------------------------------------------------------------------
+# The PreToolUse TRIGGER itself.
+#
+# Everything above varies what the gate evaluates. Nothing varied WHEN it
+# evaluates, which is the arm that changed when this moved from Stop to
+# PreToolUse -- and a reviewer demonstrated the consequence: making `is_gated=1`
+# unconditional AND turning the fail-closed missing-path arm into `exit 0` left
+# the whole suite at 108/108. A silent fail-open in the gate's one deliberate
+# refusal fired no probe at all.
+#
+# These drive the gate through `gate_with_stdin` rather than `gate`, because the
+# whole point is to vary the stdin `gate` holds fixed.
+gate_with_stdin() {
+  local d="$1" stdin="$2" out rc
+  cmp -s "$d/.claude/hooks/review-board-gate.sh" "$HOOKS_SRC/review-board-gate.sh" || return 2
+  bash -n "$d/.claude/hooks/review-board-gate.sh" 2>/dev/null || return 2
+  out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$stdin" 2>&1)
+  rc=$?
+  printf '%s' "$out" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' && return 1
+  [ "$rc" -eq 0 ] || return 2
+  return 0
+}
+
+# Unreviewed work in flight for every case below, so an allow can only come from
+# the trigger deciding this call is none of its business.
+d=$(new_repo) || exit 1
+mkdir -p "$d/src/routes"
+printf '<button>Open</button>\n' > "$d/src/routes/Modal.svelte"
+
+# A path that is positively confirmed NOT gated: the one case that allows.
+gate_with_stdin "$d" '{"tool_input":{"file_path":"src/routes/Modal.svelte"}}'
+case $? in
+  0) ok "a tool call targeting a non-roadmap file is allowed through" ;;
+  1) no "a tool call targeting a non-roadmap file is allowed through" "gate denied" ;;
+  2) no "a tool call targeting a non-roadmap file is allowed through" "gate did not run to completion" ;;
+esac
+
+# The gated files themselves, both spellings and both relative/absolute forms.
+for target in "ROADMAP.md" "ROADMAP.local.md" "$d/ROADMAP.md" "$d/ROADMAP.local.md"; do
+  gate_with_stdin "$d" "{\"tool_input\":{\"file_path\":\"$target\"}}"
+  case $? in
+    1) ok "a tool call targeting $target is denied without a sign-off" ;;
+    0) no "a tool call targeting $target is denied without a sign-off" "gate allowed" ;;
+    2) no "a tool call targeting $target is denied without a sign-off" "gate did not run to completion" ;;
+  esac
+done
+
+# THE FAIL-CLOSED ARM. A call whose target cannot be determined must deny, never
+# allow: "cannot tell" is indistinguishable from a bypass to anything relying on
+# this gate. Three shapes of undeterminable, each independently able to regress.
+for label in "an absent file_path field" "malformed json" "an empty file_path"; do
+  case "$label" in
+    "an absent file_path field") payload='{"tool_input":{}}' ;;
+    "malformed json")            payload='{"tool_input":' ;;
+    "an empty file_path")        payload='{"tool_input":{"file_path":""}}' ;;
+  esac
+  gate_with_stdin "$d" "$payload"
+  case $? in
+    1) ok "$label denies rather than silently allowing" ;;
+    0) no "$label denies rather than silently allowing" "gate allowed -- fail-open" ;;
+    2) no "$label denies rather than silently allowing" "gate did not run to completion" ;;
+  esac
+done
+
+# And the allow arm must still hold once the work IS signed off, or the gate
+# would deny forever and the probes above would pass for the wrong reason.
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+gate_with_stdin "$d" '{"tool_input":{"file_path":"ROADMAP.md"}}'
+case $? in
+  0) ok "a signed-off body of work allows the roadmap edit through" ;;
+  1) no "a signed-off body of work allows the roadmap edit through" "gate denied after a full sign-off" ;;
+  2) no "a signed-off body of work allows the roadmap edit through" "gate did not run to completion" ;;
+esac
+rm -rf "$d"
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

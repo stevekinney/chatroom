@@ -15,8 +15,8 @@
 #   `.claude` is in scope except its state directory and settings.local.json.
 #   `.claude/hooks` is explicitly in scope. That does NOT mean neutering the
 #   board is caught -- the gate sources this file before it computes scope, so a
-#   self-excluding edit hides itself. See CLAUDE.md; a Stop hook cannot police
-#   its own disablement, and pretending otherwise is worse than saying so.
+#   self-excluding edit hides itself. See CLAUDE.md; the gate cannot police its
+#   own disablement, and pretending otherwise is worse than saying so.
 #
 #   Untracked content is hashed through a throwaway git index. Reading paths out
 #   of `git status --porcelain` missed whole new directories (reported as one

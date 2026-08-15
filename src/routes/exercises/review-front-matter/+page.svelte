@@ -233,6 +233,32 @@
 	const rawDiff = generateUnifiedDiff(diffState, { normalizeInputs: false });
 
 	let diffValue = $state(DIFF_CURRENT);
+
+	// ROADMAP RE-2. The two `<pre>` blocks above are MODULE output — they prove
+	// what `generateUnifiedDiff` does, not what the component ships. The
+	// component has three export surfaces for the same string (the `fm-diff-diff`
+	// hidden input, `exportUnifiedDiff()` through `bind:this`, and the "Git Diff"
+	// item in the export menu), and the criterion asks for them to be asserted to
+	// agree on a front-matter document. Reading the imperative one needs a bound
+	// instance, so the fixture below grows one.
+	//
+	// Captured on click rather than `$derived`: `exportUnifiedDiff()` is a method
+	// call that snapshots `getState()`, and driving it from a button is what makes
+	// it the imperative path rather than a second rendering of the same
+	// reactivity.
+	let diffEditor = $state<ReturnType<typeof ReviewEditor> | undefined>(undefined);
+	let imperativeDiff = $state('');
+	let imperativeSummary = $state('');
+
+	function readImperativeExports() {
+		const editor = diffEditor;
+		// No `?? ''` fallback: leaving these empty when the instance is missing
+		// keeps "the editor never mounted" distinguishable from "the export is an
+		// empty string", which is a real value `generateUnifiedDiff` returns.
+		if (!editor) return;
+		imperativeDiff = editor.exportUnifiedDiff().diff;
+		imperativeSummary = editor.exportMarkdownSummary().markdown;
+	}
 </script>
 
 <div style="max-width: 72rem; margin: 0 auto; padding: 1rem; display: grid; gap: 2.5rem;">
@@ -388,6 +414,7 @@
 			style="margin: 0;">{rawDiff.diff}</pre>
 		<div data-testid="fm-diff-wrapper" style="min-height: 34rem;">
 			<ReviewEditor
+				bind:this={diffEditor}
 				id="fm-diff"
 				name="fm-diff"
 				original={DIFF_ORIGINAL}
@@ -395,5 +422,19 @@
 				currentUserId="steve"
 			/>
 		</div>
+		<button
+			type="button"
+			data-testid="fm-read-imperative-exports"
+			onclick={readImperativeExports}
+			style="justify-self: start;">Read exportUnifiedDiff() / exportMarkdownSummary()</button
+		>
+		<pre
+			data-testid="fm-imperative-diff"
+			data-value={json(imperativeDiff)}
+			style="margin: 0;">{imperativeDiff}</pre>
+		<pre
+			data-testid="fm-imperative-summary"
+			data-value={json(imperativeSummary)}
+			style="margin: 0;">{imperativeSummary}</pre>
 	</section>
 </div>

@@ -126,6 +126,19 @@ The first release includes a dashboard, export actions, and inline review.
 				oncommentdelete={(event) => record(`commentdelete:${event.commentId}:soft=${event.soft}`)}
 			/>
 		</div>
+
+		<!--
+			The mirror of `tab-order-start`, and it earns its place for the same
+			reason. Tabbing forward out of the editor used to run off the end of the
+			document, where engines disagree: Chromium parks on `<body>` and wraps on
+			the next press, while Firefox hands focus to the browser chrome and the
+			test can no longer see it. Giving the exit somewhere real to land makes
+			the assertion NAME the element focus reached instead of asserting the
+			absence of one — stricter, and the same in every engine.
+		-->
+		<div>
+			<button type="button" data-testid="tab-order-end">End of tab order</button>
+		</div>
 	</section>
 
 	<section style="display: grid; gap: 0.5rem;">

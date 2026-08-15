@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { applyPatchInTempRepo } from '../git-apply';
 import { gotoHydrated } from '../hydration';
 import type { Browser, Page } from '@playwright/test';
 
@@ -61,8 +62,18 @@ const REWRITTEN_FULL_DOCUMENT = [
 	'Alpha line.'
 ].join('\n');
 
-async function openFixture(browser: Browser): Promise<Page> {
-	const page = await browser.newPage();
+/**
+ * `permissions` builds an explicit context instead of using `test.use`, which
+ * configures the `page` FIXTURE — a describe-shared page from
+ * `browser.newPage()` would not inherit it, and the clipboard read in the export
+ * describe would fail on permission. Granting it per-describe rather than
+ * file-wide also keeps the other nine describes free of a clipboard grant that
+ * Firefox and WebKit do not both map.
+ */
+async function openFixture(browser: Browser, permissions?: string[]): Promise<Page> {
+	const page = permissions
+		? await (await browser.newContext({ permissions })).newPage()
+		: await browser.newPage();
 	await gotoHydrated(page, '/exercises/review-front-matter');
 	await expect(page.locator('[data-testid="review-editor"][data-ready="true"]')).toHaveCount(
 		EDITOR_COUNT
@@ -675,9 +686,43 @@ test.describe('review front matter: unified diff', () => {
 		expect(value).not.toBeNull();
 		expect(value!).not.toMatch(INVENTED_UNDERLINE);
 		expect(value!).not.toContain('@@ -1,8 +1,8 @@');
-		// The fences reach the form untouched, and the header matches the lines.
+		// The fences reach the form untouched.
 		expect(value!).toContain('\n ---\n+draft: false\n title: Release Plan\n-draft: true\n ---\n');
-		expect(hunkCounts(value!)).toEqual([{ declared: [6, 6], actual: [6, 6] }]);
+
+		// ROADMAP RE-2 replaced this test's load-bearing assertion. It used to end
+		// at `hunkCounts(value!)` — a hand-rolled check that a hunk header's
+		// declared counts match the lines under it. That check is real but weak:
+		// it is a restatement of the arithmetic the generator already did, and it
+		// cannot see a wrong start line, a context line that does not match the
+		// file, or a missing trailing newline. Calling a patch "appliable" on that
+		// basis is the same move that let the front-matter corruption through
+		// review in the first place, so the claim is now settled by git itself.
+		// (`hunkCounts` survives above, where it documents the OLD bug's
+		// signature — `@@ -1,8 +1,8 @@` over a document that never existed —
+		// rather than standing in for appliability.)
+		//
+		// The document written to disk is read back out of the component's own
+		// `fm-diff-original` input rather than retyped here, so a fixture edit
+		// cannot leave the patch and the file describing different documents.
+		const original = await page.locator('input[name="fm-diff-original"]').getAttribute('value');
+		const current = await page.locator('input[name="fm-diff-current"]').getAttribute('value');
+		expect(original).not.toBeNull();
+		expect(current).not.toBeNull();
+		// Applying for real and comparing the bytes, not just `--check`: git
+		// searches for a hunk's context instead of trusting its `@@` start line,
+		// so `--check` alone would accept a header pointing at the wrong line.
+		// The trailing newline is the helper's, and it is there because
+		// `normalizeInputs: true` makes the patch describe both sides as
+		// newline-terminated while the fixture string is not.
+		expect(current!.endsWith('\n')).toBe(false);
+		expect(applyPatchInTempRepo(original!, value!)).toBe(`${current!}\n`);
+
+		// The control that keeps the assertion above honest: the same patch with
+		// one hunk-header count bumped by one — the exact shape of the corruption
+		// this route was built around — is refused.
+		expect(() =>
+			applyPatchInTempRepo(original!, value!.replace('@@ -1,6 +1,6 @@', '@@ -1,7 +1,6 @@'))
+		).toThrow(/corrupt patch/);
 
 		// Still byte-identical to the standalone default-options call rendered on
 		// the page — which is what attributes the behavior to
@@ -688,5 +733,132 @@ test.describe('review front matter: unified diff', () => {
 		// path no longer has a hidden penalty for not being able to pass options.
 		const raw = await page.getByTestId('fm-diff-raw').getAttribute('data-value');
 		expect(JSON.parse(raw!)).toBe(value);
+	});
+});
+
+// ROADMAP RE-2, the WITH-front-matter half of "the same check runs for a document
+// with YAML front matter and one without". `review-form-and-exports` owns the
+// without half and the same `applyPatchInTempRepo` helper serves both.
+//
+// This route is where appliability matters most. Every other export surface on
+// it survived the front-matter corruption unchanged; the diff was the one that
+// shipped a patch `git apply` refuses, from an API documented as producing git
+// patches. Asserting that here with git rather than with arithmetic is the whole
+// point of the item.
+// The same tripwire the diff describe uses, redeclared here because that one is
+// scoped inside its own describe: a line of eight or more dashes carrying a diff
+// marker exists in neither input document, so anything matching it was invented
+// by a normalization pass.
+const INVENTED_UNDERLINE_IN_SUMMARY = /^[-+]-{8,}$/m;
+
+test.describe('review front matter: every export surface ships the same patch', () => {
+	// The one-key change's summary, byte for byte. Worth pinning next to the diff
+	// because the two functions do NOT agree about normalization:
+	// `generateUnifiedDiff` parses the front matter off and normalizes the body,
+	// while `generateMarkdownSummary` runs `computeLineDiff` on the raw strings
+	// with no normalization step at all. On this fixture they happen to describe
+	// the same change; the literal is here so that if that stops being true, it
+	// stops loudly.
+	const EXPECTED_SUMMARY = [
+		'## Changes Made',
+		'',
+		'The following edits were made to the document:',
+		'',
+		'### Lines 1-5',
+		'',
+		'```diff',
+		' ---',
+		'+draft: false',
+		' title: Release Plan',
+		'-draft: true',
+		' ---',
+		' ',
+		'```',
+		''
+	].join('\n');
+
+	let page: Page;
+
+	test.beforeAll(async ({ browser }) => {
+		page = await openFixture(browser, ['clipboard-read', 'clipboard-write']);
+	});
+
+	test.afterAll(async () => {
+		await page.context().close();
+	});
+
+	test('the hidden input, exportUnifiedDiff(), and the Git Diff menu item are one string that git applies', async () => {
+		// RE-2 names the UI path as the "Copy Diff menu item". There is no such
+		// label: the item is "Git Diff" and it sits behind a trigger whose
+		// accessible name is "Copy to clipboard". Correcting the criterion's
+		// wording rather than inventing a selector that does not exist.
+		const wrapper = page.getByTestId('fm-diff-wrapper');
+
+		// Surface one: what a surrounding <form> would POST.
+		const hidden = await page.locator('input[name="fm-diff-diff"]').inputValue();
+		expect(hidden).not.toBe('');
+
+		// Surface two: the imperative method, driven through `bind:this`. Read
+		// from a `data-value` attribute holding `JSON.stringify(...)` for the same
+		// reason as everything else on this route — the diff's context lines
+		// include a line that is a single space, and Playwright's text matchers
+		// collapse whitespace runs.
+		await page.getByTestId('fm-read-imperative-exports').click();
+		// Polled off its empty initial value rather than read straight after the
+		// click: the button assigns to `$state` and the attribute lands on the
+		// next flush. `'""'` is `JSON.stringify('')`, i.e. the "never ran" state
+		// the page deliberately leaves distinguishable from an empty export.
+		await expect
+			.poll(() => page.getByTestId('fm-imperative-diff').getAttribute('data-value'))
+			.not.toBe('""');
+		const imperativeRendered = await page
+			.getByTestId('fm-imperative-diff')
+			.getAttribute('data-value');
+		expect(imperativeRendered).not.toBeNull();
+		const imperative = JSON.parse(imperativeRendered!) as string;
+
+		// Surface three: the export menu. Gated on the copy ANNOUNCEMENT rather
+		// than read straight after the click — the component awaits
+		// `copyToClipboard(text)` before writing the announcement, so the
+		// announcement strictly follows the clipboard write.
+		await wrapper.getByRole('button', { name: 'Copy to clipboard' }).click();
+		const menu = page.locator('#fm-diff-export-menu');
+		await expect(menu).toBeVisible();
+		await menu.getByRole('menuitem', { name: /^Git Diff/ }).click();
+		await expect(wrapper.locator('.export-actions .cinder-sr-only[aria-live="polite"]')).toHaveText(
+			'Copied Git Diff'
+		);
+		const copied = await page.evaluate(() => navigator.clipboard.readText());
+
+		expect(imperative).toBe(hidden);
+		expect(copied).toBe(hidden);
+
+		// And the patch all three carry is one git will take, producing exactly
+		// the document the component says it is holding.
+		const original = await page.locator('input[name="fm-diff-original"]').inputValue();
+		const current = await page.locator('input[name="fm-diff-current"]').inputValue();
+		expect(current.endsWith('\n')).toBe(false);
+		expect(applyPatchInTempRepo(original, copied)).toBe(`${current}\n`);
+	});
+
+	test('exportMarkdownSummary ships the same front-matter change, and prints no thread section for a fixture with no threads', async () => {
+		await page.getByTestId('fm-read-imperative-exports').click();
+		await expect
+			.poll(() => page.getByTestId('fm-imperative-summary').getAttribute('data-value'))
+			.not.toBe('""');
+		const rendered = await page.getByTestId('fm-imperative-summary').getAttribute('data-value');
+		expect(rendered).not.toBeNull();
+		const summary = JSON.parse(rendered!) as string;
+
+		// The imperative method and the hidden input are the same `$derived`.
+		expect(summary).toBe(await page.locator('input[name="fm-diff-summary"]').inputValue());
+		expect(summary).toBe(EXPECTED_SUMMARY);
+
+		// The YAML reaches the summary intact — no setext underline, no invented
+		// dash line — which is the same regression tripwire the diff tests carry.
+		expect(summary).not.toMatch(INVENTED_UNDERLINE_IN_SUMMARY);
+		// No threads on this fixture, so the Feedback section is absent entirely
+		// rather than present and empty.
+		expect(summary).not.toContain('## Feedback');
 	});
 });

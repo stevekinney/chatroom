@@ -425,7 +425,20 @@ test.describe('review-views: the diff panel', () => {
 		}
 	});
 
-	test("DiffViewer's keyboard shortcuts are bound to the window, not the panel", async () => {
+	test("DiffViewer's keyboard shortcuts are scoped to focus inside its own subtree, not the window", async () => {
+		// FIXED contract as of `@lostgradient/editor@0.10.0` (cinder#1310). The
+		// handler moved from a bare `<svelte:window onkeydown>` onto DiffViewer's
+		// own root element, relying on DOM event bubbling — so a keystroke only
+		// reaches it when the currently focused element is inside that instance's
+		// own subtree. `ReviewEditor`'s OWN mode-switcher radiogroup
+		// (`DIFF_MODE_GROUP`, id-prefixed `views-editor-controls-…`) is rendered
+		// by ReviewEditor itself, alongside DiffViewer rather than inside its
+		// `toolbar` snippet (which this route passes empty — see "ReviewEditor
+		// suppresses DiffViewer's own toolbar and hunk chrome" above) — so even
+		// ReviewEditor's own controls are now OUTSIDE the scope that fires these
+		// shortcuts. The one thing genuinely inside DiffViewer's own subtree here
+		// is the diff content itself: each diff line renders as a
+		// `role="button"`, and focusing one is what makes the shortcuts fire.
 		const main = instance(page, 'views-main');
 		// Round-trip through the editor first so the DiffViewer below is a fresh
 		// mount — otherwise "auto-selected on mount" would be asserting about
@@ -434,28 +447,30 @@ test.describe('review-views: the diff panel', () => {
 		await selectView(main, 'Diff');
 		await useMode('Unified');
 
-		// Move focus off the panel entirely: clicking a page heading leaves
-		// `document.activeElement` on `<body>`. The shortcuts below still fire,
-		// because DiffViewer registers them with `<svelte:window onkeydown>` and
-		// only opts out when the event target is an input, textarea, or
-		// contenteditable. Anything else on the page — a heading, a button, the
-		// body — is fair game.
-		//
-		// The corollary, deliberately not exercised so this test stays
-		// deterministic: a second ReviewEditor sitting in its diff view anywhere
-		// on the same page receives the identical keystrokes and cycles too.
-		await page.getByRole('heading', { name: 'Views and diff' }).click();
-
 		const group = page.locator(DIFF_MODE_GROUP);
 		const mode = (name: string) => group.getByRole('radio', { name });
 
 		// The first change is auto-selected on mount without any interaction.
-		await expect(main.locator('.diff-line[data-selected="true"]')).toHaveAttribute(
-			'aria-label',
-			/^Modified line:/
-		);
+		const selected = main.locator('.diff-line[data-selected="true"]');
+		await expect(selected).toHaveAttribute('aria-label', /^Modified line:/);
 
-		// `]` / `[` walk the changed rows and wrap at both ends.
+		// Focus OUTSIDE every DiffViewer instance: clicking a page heading leaves
+		// `document.activeElement` on `<body>`. This now fires nothing — a
+		// deliberate behavior change from the old global listener, not only a
+		// bug fix. Proven with a causal barrier (`useMode` has its own
+		// observable effect) rather than a bare absence-of-change assertion,
+		// which could equally pass because nothing had happened yet.
+		await page.getByRole('heading', { name: 'Views and diff' }).click();
+		await page.keyboard.press(']');
+		await page.keyboard.press('Control+Shift+D');
+		await useMode('Final');
+		await useMode('Unified');
+		await expect(selected).toHaveAttribute('aria-label', /^Modified line:/);
+
+		// Focus a diff line — genuinely inside DiffViewer's own Surface root —
+		// and the same shortcuts now work. `]` / `[` walk the changed rows and
+		// wrap at both ends.
+		await selected.focus();
 		await page.keyboard.press(']');
 		await expect(main.locator('.diff-line[data-selected="true"]')).toHaveAttribute(
 			'aria-label',
@@ -474,9 +489,13 @@ test.describe('review-views: the diff panel', () => {
 
 		// Ctrl+Shift+D cycles Unified → Final → Original → Unified, and the
 		// toolbar radiogroup follows because both read the same bound
-		// `diffViewMode`. Note the modifier is literally Control on every
-		// platform — the handler checks `event.ctrlKey`, so macOS does not get
-		// the Cmd-based chord it would expect.
+		// `diffViewMode` — even though the radiogroup itself sits outside
+		// DiffViewer's own subtree, the keystroke that changes the bound value
+		// still has to originate INSIDE it. Note the modifier is literally
+		// Control on every platform — the handler checks `event.ctrlKey`, so
+		// macOS does not get the Cmd-based chord it would expect. Focus stays on
+		// the same diff-line button across all three presses: each mode change
+		// re-renders the diff body, but does not move focus away from it.
 		await expect(mode('Unified')).toHaveAttribute('aria-checked', 'true');
 		await page.keyboard.press('Control+Shift+D');
 		await expect(mode('Final')).toHaveAttribute('aria-checked', 'true');

@@ -152,7 +152,32 @@ test('interleaving a prepended older batch and an appended live message keeps vi
 		timelineBox.x + timelineBox.width / 2,
 		timelineBox.y + timelineBox.height / 2
 	);
-	for (let tick = 0; tick < 15; tick += 1) {
+	// Goal-seeking rather than a fixed tick budget. `15 × 2000px` encoded an
+	// assumption that one wheel event applies its full delta — true in Chromium
+	// and WebKit, false in Firefox, which caps a single wheel event at just under
+	// one scrollport height (a 457px port applies ~423px). Firefox needed 21 ticks
+	// where Chromium needed 5, so the fixed budget undershot and left the view
+	// pinned near the bottom.
+	//
+	// Deriving the count from the engine instead of guessing it. Not a loosening:
+	// the assertion below is untouched, and it still fails just as loudly if the
+	// cap is exhausted, if the gesture overshoots to the very top, or if the
+	// virtualizer stops rendering mid-range rows.
+	// A range (not an exact index) tolerates the gap between
+	// `virtualizationEstimatedRowHeight` and each row's real measured height.
+	const midBandRendered = (bodies: string[]) =>
+		bodies.some((text) => {
+			const index = Number(text.match(/^Message (\d+)/)?.[1]);
+			return Number.isFinite(index) && index > 100 && index < 400;
+		});
+
+	const inMidBand = () =>
+		page.locator('.chat-message-body').allTextContents().then(midBandRendered);
+
+	for (let tick = 0; tick < 200 && !(await inMidBand()); tick += 1) {
+		// Overshot past the whole transcript — wheeling more cannot help, and the
+		// assertion should report that rather than the loop spinning to its cap.
+		if ((await timeline.evaluate((element) => element.scrollTop)) === 0) break;
 		await page.mouse.wheel(0, -2000);
 	}
 
@@ -161,15 +186,7 @@ test('interleaving a prepended older batch and an appended live message keeps vi
 	// view pinned to the bottom. A range (not an exact index) tolerates the
 	// gap between `virtualizationEstimatedRowHeight` and each row's real
 	// measured height.
-	await expect
-		.poll(async () => {
-			const bodies = await page.locator('.chat-message-body').allTextContents();
-			return bodies.some((text) => {
-				const index = Number(text.match(/^Message (\d+)/)?.[1]);
-				return Number.isFinite(index) && index > 100 && index < 400;
-			});
-		})
-		.toBe(true);
+	await expect.poll(inMidBand).toBe(true);
 
 	await page.getByTestId('virtualization-prepend-older').click();
 	await page.getByTestId('virtualization-append-live').click();

@@ -191,15 +191,13 @@
 <div
 	style="height: 100dvh; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; box-sizing: border-box;"
 >
-	{#if error}
-		<p
-			role="alert"
-			data-testid="interleaving-error"
-			style="margin: 0; color: var(--cinder-danger);"
-		>
-			{error}
-		</p>
-	{/if}
+	<!-- Always rendered, never `{#if}`-gated. A live region has to exist in the
+	     DOM before the content arrives: mounting one that already has text is not
+	     reliably announced, which is the pattern Chat's own
+	     `chat-status-announcer.svelte` documents and follows. -->
+	<p role="alert" data-testid="interleaving-error" style="margin: 0; color: var(--cinder-danger);">
+		{error ?? ''}
+	</p>
 	<div style="flex: 1; min-height: 0; display: flex; gap: 0.75rem;">
 		<div style="flex: 2; min-height: 0; display: flex; flex-direction: column;">
 			<Chat

@@ -8,6 +8,8 @@
 		timestamp,
 		updateComment,
 		type Comment,
+		type CommentDeleteEvent,
+		type CommentUpdateEvent,
 		type Thread
 	} from '@lostgradient/editor/comments';
 	import { ReviewEditor } from '@lostgradient/editor/review-editor';
@@ -251,12 +253,7 @@
 		lastChanged = String(result.changed);
 	}
 
-	function applyCommentUpdate(event: {
-		threadId: string;
-		commentId: string;
-		body: string;
-		mentions?: string[];
-	}) {
+	function applyCommentUpdate(event: CommentUpdateEvent) {
 		// `editedAt` is REQUIRED by `updateComment` and is NOT on the event — the
 		// component has no clock of its own here, so the consumer supplies it.
 		// This is what makes `(edited)` appear.
@@ -269,7 +266,7 @@
 		lastChanged = String(result.changed);
 	}
 
-	function applyCommentDelete(event: { threadId: string; commentId: string; soft: boolean }) {
+	function applyCommentDelete(event: CommentDeleteEvent) {
 		const result = deleteComment(threads, event.threadId, event.commentId, {
 			soft: event.soft,
 			deletedAt: timestamp()
@@ -292,6 +289,61 @@
 		const result = deleteComment(threads, 't-doc', 'c-doc-1', { soft: true });
 		threads = result.threads;
 		lastChanged = String(result.changed);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Deferred application — the only way a stale id can reach the reducer
+	// ---------------------------------------------------------------------------
+
+	// The scenario is "a delayed callback": a consumer that round-trips a comment
+	// mutation through a server and applies it when the response lands, while the
+	// user does something else in the meantime. That gap has to be modelled HERE,
+	// on the consumer, because ReviewEditor cannot produce it. Every mutation the
+	// component can emit re-looks-up its id in the CURRENT `threads` and returns
+	// before firing (`updateComment`, `deleteComment`, `deleteThread` in
+	// `review-editor-impl.svelte`), and the popover unmounts itself the moment its
+	// thread leaves `threads` — so there is no sequence of clicks that hands the
+	// reducer an id the component has already forgotten about.
+	//
+	// What the component still contributes, and the reason this is not a literal
+	// typed into a test: the queued payload is the component's own, minted from a
+	// real click on a real comment. Only the MOMENT of application moves.
+	let deferralArmed = $state(false);
+
+	type DeferredCommentEvent =
+		| { kind: 'commentupdate'; json: string; event: CommentUpdateEvent }
+		| { kind: 'commentdelete'; json: string; event: CommentDeleteEvent };
+
+	// `$state.raw`, not `$state`: a deep proxy would re-wrap the component's own
+	// payload object, and the whole point of holding it is that what the reducer
+	// eventually receives is byte-for-byte what the component handed over.
+	let deferred = $state.raw<DeferredCommentEvent[]>([]);
+
+	// Captured at flush time rather than derived: `deleteComment`/`updateComment`
+	// promise the IDENTICAL array back on a no-op, and identity is not observable
+	// from any of the readouts above — every one of them would look the same
+	// against a fresh array with the same contents.
+	let flushKeptIdentity = $state('—');
+
+	// One-shot on purpose. If arming swallowed everything until the flush it would
+	// also swallow the `onthreaddelete` that has to land in between, and the test
+	// could no longer tell "deferred" from "never applied".
+	function deferIfArmed(item: DeferredCommentEvent): boolean {
+		if (!deferralArmed) return false;
+		deferralArmed = false;
+		deferred = [...deferred, item];
+		return true;
+	}
+
+	function flushDeferred() {
+		const queued = deferred;
+		deferred = [];
+		const priorThreads = threads;
+		for (const item of queued) {
+			if (item.kind === 'commentupdate') applyCommentUpdate(item.event);
+			else applyCommentDelete(item.event);
+		}
+		flushKeptIdentity = String(priorThreads === threads);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -318,6 +370,11 @@
 	const anchorReadout = $derived(
 		threads.map((thread) => `${thread.id}:${thread.anchor.from}-${thread.anchor.to}`).join(' ')
 	);
+	// The payloads verbatim, so a test can prove the ids it later sees reach the
+	// reducer were authored by the component rather than by the page.
+	const deferredReadout = $derived(
+		deferred.length === 0 ? '—' : deferred.map((item) => `${item.kind} ${item.json}`).join(' | ')
+	);
 </script>
 
 <div style="max-width: 76rem; margin: 0 auto; padding: 1rem; display: grid; gap: 1.5rem;">
@@ -336,10 +393,15 @@
 				}}
 				oncommentupdate={(event) => {
 					record('commentupdate', event);
+					// `record` runs first either way: the event log is the proof the
+					// component emitted at all, and it must not depend on whether the
+					// page chose to act on it.
+					if (deferIfArmed({ kind: 'commentupdate', json: JSON.stringify(event), event })) return;
 					applyCommentUpdate(event);
 				}}
 				oncommentdelete={(event) => {
 					record('commentdelete', event);
+					if (deferIfArmed({ kind: 'commentdelete', json: JSON.stringify(event), event })) return;
 					applyCommentDelete(event);
 				}}
 				onthreaddelete={(event) => {
@@ -381,5 +443,27 @@
 				<li>{entry}</li>
 			{/each}
 		</ul>
+	</section>
+
+	<!--
+		Appended below `Observed state` on purpose, never above or between it and
+		the editor. The sidebar renders BELOW the editor and overflows this route's
+		fixed 30rem wrapper, so the `Observed state` heading paints over the last
+		sidebar row — which is why the spec clicks sidebar rows at an offset. Moving
+		anything up would change which element is on top and invalidate that offset.
+	-->
+	<section style="display: grid; gap: 0.5rem;">
+		<h2 style="margin: 0; font-size: 1rem;">Deferred application</h2>
+		<p data-testid="deferral-armed" style="margin: 0;">deferral armed: {deferralArmed}</p>
+		<p data-testid="deferred-queue" style="margin: 0;">deferred: {deferredReadout}</p>
+		<p data-testid="flush-identity" style="margin: 0;">
+			flush kept array identity: {flushKeptIdentity}
+		</p>
+		<button type="button" data-testid="arm-deferral" onclick={() => (deferralArmed = true)}>
+			Queue the next comment event instead of applying it
+		</button>
+		<button type="button" data-testid="flush-deferred" onclick={flushDeferred}>
+			Apply the queued event now
+		</button>
 	</section>
 </div>

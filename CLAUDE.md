@@ -14,11 +14,13 @@ change often as we try things against the real component.
 `ReviewEditor` from `@lostgradient/editor` gets the same treatment, under the `review-*`
 exercises — see [Using the ReviewEditor component](#using-the-revieweditor-component).
 
-As of Cinder 0.16, `Chat` lives in its own package, `@lostgradient/chat`, which peer-depends on
-`@lostgradient/cinder` (the design primitives), `conversationalist`, `zod`, and `svelte`.
-chatroom installs both `@lostgradient/*` packages from npm and provides those peers;
-`@lostgradient/cinder` still supplies the base styles, it's just no longer where `Chat` itself
-comes from.
+As of Cinder 0.16, `Chat` lives in its own package, `@lostgradient/chat`. As of
+`@lostgradient/chat@0.9.4` it peer-depends on exactly three things: `@lostgradient/cinder` (the
+design primitives), `@lostgradient/markdown`, and `svelte`. `conversationalist` and `zod` are
+**not** peers — they are chat's own regular dependencies, which is precisely what the cinder#753
+fix documented below moved them to. chatroom installs the `@lostgradient/*` packages from npm and
+provides those peers; `@lostgradient/cinder` still supplies the base styles, it's just no longer
+where `Chat` itself comes from.
 
 ## Working across `chatroom` and `../cinder`
 
@@ -40,7 +42,7 @@ To move to a newer Cinder/Chat release after it publishes, bump both and re-veri
 directly or via `bun run sync:cinder` (see [the resolve loop below](#filing-and-resolving-upstream-issues)):
 
 ```bash
-bun update @lostgradient/cinder @lostgradient/chat --latest
+bun update @lostgradient/cinder @lostgradient/chat @lostgradient/editor @lostgradient/markdown armorer --latest
 bun run lint && bun run check
 ```
 
@@ -145,27 +147,74 @@ These complaints have standing GitHub issues — don't re-litigate or re-file th
 instead:
 
 - [stevekinney/cinder#863](https://github.com/stevekinney/cinder/issues/863) — **fixed and
-  verified** in `@lostgradient/chat@0.4.0`: chat ships conversationalist `^0.5.0` and
+  verified** in `@lostgradient/chat@0.4.0`, which shipped conversationalist `^0.5.0` (the
+  installed 0.9.4 ships `^0.6.1`) and
   re-exports `prependMessages`/`buildMessage` (while keeping `createConversation`); the
   `$state.snapshot` double-casts and the hand-rolled prepend are gone.
 - [stevekinney/cinder#753](https://github.com/stevekinney/cinder/issues/753) — **fixed and
   verified** in `@lostgradient/chat@0.2.0`: conversationalist/zod moved to chat's own
-  dependencies and `isJSONValue` is re-exported; chatroom dropped its direct
-  `conversationalist` install.
+  dependencies and `isJSONValue` is re-exported. chatroom's direct `conversationalist` install
+  was removed then and **re-added in 2026-08** for the subpaths chat does not re-export, so the
+  current state is that chatroom declares it — see the Chat section above, and
+  `check:peers`, which exists to police exactly that declaration.
 - [stevekinney/cinder#754](https://github.com/stevekinney/cinder/issues/754) — **fixed and
   verified** in `@lostgradient/chat@0.1.1`: components self-import their CSS. Listed here only
   so it doesn't get re-filed; the explicit `/styles` imports it used to require are gone.
-- The `/exercises` routes (one per Chat surface area) exist to smoke out this kind of friction;
-  building them filed cinder#778–786, cinder#863–864, and agent-bureau#244–245 — all since
-  resolved.
+- [stevekinney/cinder#1288](https://github.com/stevekinney/cinder/issues/1288) — **fixed and
+  verified** in `@lostgradient/editor@0.9.1`. `ReviewEditor.createThread` and friends read
+  `currentSelection`, which lagged the real selection by one selection-changing transaction
+  because the listener re-read `view.state` from inside `EditorState.apply`; a thread could
+  therefore anchor to the wrong text or return `null` depending on transaction count, not on
+  whether the selection was native. Fixed by
+  [stevekinney/cinder#1289](https://github.com/stevekinney/cinder/pull/1289), which passes
+  Milkdown's live selection to the listener. `src/routes/exercises/review-imperative/` now pins
+  the FIXED contract from both directions — one programmatic dispatch anchors, and a native drag
+  anchors exactly what it covered — and both go red against 0.9.0, verified by reverting the fix
+  in the installed dist. The `upstream:` marker is gone. The drag helper it guarded is **not**:
+  it came out of the shared thread-creation path, which is what the marker was about, but one
+  test still drives it deliberately, because the native pointer path is where this bug's severity
+  was worst and it is the only assertion covering it. Its docblock argues the case against its own
+  earlier advice.
+- [stevekinney/cinder#1309](https://github.com/stevekinney/cinder/issues/1309) — **fixed and
+  verified** in `@lostgradient/editor@0.10.0`. `DiffToolbar` hardcoded `id="diff-view-mode"` on
+  every instance, so with more than one `DiffViewer` on a page `SegmentedControl`'s
+  `aria-labelledby="diff-view-mode-label"` resolved every instance's label to the first instance's
+  in the document via `getElementById`. Fixed by deriving the id from `DiffViewer`'s own
+  `$props.id()`-based `instanceId` and passing it down explicitly, matching the rest of the
+  package's id-generation convention. `src/routes/exercises/diff-viewer/diff-viewer.e2e.ts` pins
+  the fixed contract (unique per-instance ids, `aria-labelledby` resolving within the same
+  instance) and goes red against the reverted dist, verified by reverting and restoring.
+- [stevekinney/cinder#1310](https://github.com/stevekinney/cinder/issues/1310) — **fixed and
+  verified** in `@lostgradient/editor@0.10.0`. `DiffViewer` bound its `]`/`[`/`Ctrl+Shift+D`
+  shortcuts via a bare `<svelte:window onkeydown>` with only an input/textarea/contenteditable
+  guard, so every `DiffViewer` instance on a page reacted to one keystroke regardless of which
+  (if any) had focus. Fixed by moving the handler onto the instance's own root element, relying on
+  DOM event bubbling to scope it to whichever instance actually contains the focused element — a
+  deliberate behavior change beyond the bug fix: focus outside every instance (including `<body>`)
+  now fires nothing, even with a single `DiffViewer` on the page. `diff-viewer.e2e.ts` pins the
+  fixed contract and goes red against the reverted dist.
+- The `/exercises` routes — 28 of them, one per surface area — exist to smoke out this kind of
+  friction; building them filed cinder#778–786, cinder#863–864, cinder#1288, cinder#1291,
+  cinder#1292, cinder#1295, cinder#1298, cinder#1299, cinder#1309, cinder#1310, and
+  agent-bureau#244–245 — all since resolved. Six more are open and not yet resolved:
+  cinder#1301–#1306, the `A11Y-4` pinned-bug tests — see `ROADMAP.md` for what each one covers and
+  the loop's current state, rather than duplicating that here where it would drift out of sync
+  again. A seventh, cinder#1307, is the same normalizer-divergence class `X-2` investigates.
 
 ## Filing and resolving upstream issues
 
 **An upstream bug in a package we own is not an obstacle to route around. It is the next task.**
-When you hit one, you file it and then immediately go fix it — switch into that repo, drive the
-change to merge, cut a release, update our dependency here, and only then return to what you
-were doing. Do not defer it, do not batch it for later, and do not continue past it with the
-issue merely filed. A filed issue is the start of the work, not a substitute for it.
+File it, then fix it: switch into that repo, drive the change to merge, cut a release, and update
+our dependency here. This is not optional, and it is not satisfied by filing alone — a filed issue
+is the start of the work, not a substitute for it.
+
+You may batch. If you hit a second (or third) upstream bug in the same repo before you've released
+a fix for the first, file all of them as you find them, then fix, merge, and release them together
+rather than cutting one release per issue — cutting fewer releases is the entire point of batching,
+so don't fix them serially with a release in between each one. What batching does not license is
+deferral: the whole batch still has to close — every issue in it fixed, merged, released, and
+synced back here — before you declare the work that surfaced them done. Do not end a session, or
+move on to unrelated work, with an upstream issue filed but not yet fixed, released, and closed.
 
 Do not work around it locally or patch-monkey it here.
 
@@ -181,7 +230,9 @@ it if you must, and ask before filing anything on someone else's project.
 ### The loop
 
 Described for Cinder; agent-bureau is the same shape, just without a `sync:*` script — sync
-manually.
+manually. Run it once per issue, or once for a whole batch filed against the same repo: step 2
+repeats as you file each issue in the batch, and steps 1 and 3 onward run once, right before you
+actually switch in to fix the combined batch — not before the first issue is filed.
 
 1. **Leave this tree clean.** Commit or set aside the chatroom work in progress first, so the
    switch is not sitting on top of a half-finished edit you will have forgotten by the time you
@@ -206,8 +257,9 @@ manually.
 8. **Confirm the publish reached npm** (`npm view <pkg> version`) before syncing. A
    merged-but-unpublished fix does not reach here — chatroom consumes the registry, not the
    working tree.
-9. **Sync**, from `chatroom` — `bun run sync:cinder` (or the `sync-cinder` skill). It bumps the
-   `@lostgradient/*` packages to their latest published versions and re-runs `lint` + `check` +
+9. **Sync**, from `chatroom` — `bun run sync:cinder` (or the `sync-cinder` skill). It bumps all five upstream
+   packages — `@lostgradient/cinder`, `@lostgradient/chat`, `@lostgradient/editor`,
+   `@lostgradient/markdown`, and `armorer` — to their latest published versions and re-runs `lint` + `check` +
    `check:upstream` + `check:peers` (pass `--full` to also run `test:e2e`). It stops rather than
    reporting success if anything fails after the bump, since a red check right after a sync means
    a new release broke something here.
@@ -257,6 +309,35 @@ something that still reproduces and the issue shows closed, reopen it (`gh issue
 --repo <owner/repo> --comment '...'`) with a short note — a closed issue is not a valid record of
 an unresolved bug, no matter what the last comment on it says.
 
+## Breaking an installed package to prove a test: which copy actually runs
+
+Reverting a fix in `node_modules` and watching a test fail is how this repo proves a test is
+load-bearing. It has produced a false "no effect" result four separate times, each for a different
+reason, and every one of them looks identical from the outside: the suite stays green and you
+conclude the test proves nothing. Check all four before believing a negative result.
+
+- **The `svelte` and `browser` export conditions point at the package's SOURCE, not `dist`.**
+  `@lostgradient/cinder`'s `./focus-trap` subpath resolves `browser`/`svelte`/`import` to
+  `./src/components/focus-trap/index.ts` and only `default` to `dist/`. So the browser bundle
+  compiles from `node_modules/@lostgradient/cinder/src/…`, and breaking the same function in
+  `dist/index.js` changes nothing a page ever runs. Confirm with
+  `node -e "console.log(require('./node_modules/<pkg>/package.json').exports['./<subpath>'])"`
+  before editing anything.
+- **Two implementations, one of them dead.** `review-editor-anchors.svelte.js` exports a
+  `handleAnchorsUpdate` the rendered component never imports; the live one is in
+  `review-editor-impl.svelte`. Breaking the exported copy proves nothing.
+- **A public wrapper can redeclare a default, making the implementation's unreachable.**
+  `review-editor.svelte`'s `deleteComment(threadId, commentId, soft = true)` passes `soft`
+  explicitly, so the impl's own `= true` never applies. Break the wrapper, not the impl.
+- **`vite dev` serves dependencies from a pre-bundled cache** (`node_modules/.vite`) that a
+  lockfile change invalidates and a hand-edit to a dependency's files does not. A warm cache runs
+  the OLD code while reporting success. `rm -rf node_modules/.vite`, or drive `build && preview`,
+  which is immune — and kill any listening preview server first, since Playwright reuses one and a
+  stale build will happily serve the code you just changed.
+
+Restore by copying a backup back, and verify by hash rather than by eye. No "file was modified"
+notice fires for `node_modules`, so hashing is the only thing that catches a concurrent write.
+
 ## The adversarial review board
 
 No body of work is complete until four reviewers have each returned PASS on it. They live in
@@ -276,179 +357,64 @@ Convene them with the `review-board` skill, which runs all four in parallel. A `
 resolved by fixing the finding or by refuting it with evidence you can show — never by rewording
 it, narrowing a test until it passes, or calling it out of scope.
 
-A Stop hook (`.claude/hooks/review-board-gate.sh`) enforces this: with substantive work in flight, stopping is blocked until a sign-off exists naming all four. The sign-off is keyed to a hash of the work, so changing anything after a PASS invalidates it and the board reconvenes on what actually ships. What the gate excludes is a specific denylist, not "documentation" — `WORK_DENY` in `.claude/hooks/work-hash.sh` is the authority, and it currently covers `CLAUDE.md`, `AGENTS.md`, `README.md`, `ROADMAP.md`, and the state directory. `docs` and `.vscode` used to be on it and are deliberately not: the bundler resolves a relative import or an `import.meta.glob` into either, so excluding them made them a permanent home for unreviewed components — one board round on the import line, and everything added after it was free. Markdown under `.claude/agents` and `.claude/skills` is reviewable work: editing an agent's operating instructions changes behavior, and calling that a documentation edit is how you talk yourself out of a review you owe.
+**This is opt-in — nothing enforces it.** Enforcement here went through a `Stop` hook (fired on
+every turn end, over a whole-tree hash, which cross-blocked unrelated sessions sharing this tree),
+then a narrower `PreToolUse` hook gating only `ROADMAP.md` / `ROADMAP.local.md` edits, and as of
+2026-08-14 there is no hook at all — the `PreToolUse` entry was removed from
+`.claude/settings.json`. The requirement did not move with it: no body of work is complete until
+four reviewers PASS. What changed is that nothing will stop you, prompt you, or notice if you skip
+it — convening the board before declaring anything nontrivial done is now entirely on you, every
+time, not just when something nags you into it. Trigger it proactively and regularly, the same way
+you'd run the test suite before calling something finished.
 
-The gate fails closed by design: any state it cannot evaluate is a block, never an allow. A
-missing or unresolvable baseline, a missing helper, index bits that hide changes, or a failed
-`git`/`shasum` all block with an explanation rather than passing silently. Establish the baseline
-deliberately with `bash .claude/hooks/review-board-signoff.sh --initialize`; the gate no longer
-adopts `HEAD` on its own, because doing so made deleting one gitignored file a bypass.
+`.claude/hooks/review-board-gate.sh` and its dedicated test suite, `review-board-gate.test.sh`,
+still exist in the tree — nothing currently calls either, but they are not stale workarounds to
+clean up. They're the mechanism kept on hand if a future session wants machine enforcement back,
+and they document their own edge cases (gitlinks, clean filters, externally-ignored paths, and the
+rest) in their own header comments and probes. That forensic detail no longer belongs here, because
+nothing here reads it to make a decision.
 
-Scope is a denylist rather than an allowlist, so `.claude/hooks` and `.gitignore` are themselves
-reviewable work, and hiding a source file behind a `.gitignore` rule is a change the board sees.
-Ignore sources **outside** the work tree are a different matter: `.git/info/exclude` and
-`core.excludesFile` hide files with no reviewable artifact anywhere. The gate used to refuse to
-run at all while either was active, which is a fine principle and a bad rule — a global excludes
-file is a normal setup, and a gate that blocks on one is a gate people turn off. It now enumerates
-what those sources hide and folds the contents into the hash, including inside an ignored
-directory, so the hiding place is closed rather than the gate. Work parked on another branch or in
-a stash still counts.
+What counts as reviewable work, for scoping a review, is everything except `CLAUDE.md`,
+`AGENTS.md`, `README.md`, `ROADMAP.md`, and the board's own state directory
+(`.claude/.review-board-state`) — a specific denylist (`WORK_DENY` in `.claude/hooks/work-hash.sh`),
+not a stand-in for "documentation." `docs` and `.vscode` are deliberately not on it: the bundler
+resolves a relative import or an `import.meta.glob` into either, so excluding them made them a
+permanent home for unreviewed components. Markdown under `.claude/agents` and `.claude/skills` is
+reviewable work — editing an agent's operating instructions changes behavior, and calling that a
+documentation edit is how you talk yourself out of a review you owe.
 
-Reviewers demonstrated several more hiding places, each now closed and probed: work reachable only
-from a tag or any other ref (the sweep covers all refs, not just `refs/heads`); a linked worktree
-that is dirty **or detached**, and a dirty submodule or embedded repo — all three refuse, since
-none can be enumerated from here, and the submodule check keys on gitlinks rather than on
-`.gitmodules`, which an embedded `git init` never creates; and a symlink under `src/` or `static/`
-resolving outside the reviewable set, in either the file or directory shape, which let a 40-byte
-blob stand in for an unbounded surface. The gitlink check reads a MATERIALIZED throwaway index, not
-the real one, since an embedded repo never `git add`-ed to the superproject produced no entry
-there at all — a signed-off tree's embedded content could be rewritten afterward with nothing to
-catch it. That same materialized index also force-adds any path matching `.gitignore` that was
-`git add -f`-ed anyway (`add_ignored_tracked` in `work-hash.sh`): a plain `git add -A -N` on a
-FRESH index has no notion of what the real index already tracks, so such a path was simply absent
-from every throwaway index, and two commits force-adding completely different content to it hashed
-identically — a real collision, not just an omission, on every diff this file computes. And an
-embedded repo's own config can lie about its own state the same way an external ignore source can
-about this one's: `status.showUntrackedFiles=no` set inside it, or its own committed `.gitignore`,
-hid a new unreviewed component from `git status` entirely with no dirty flag to catch — both are
-forced past for the OUTER repo, one level of embedding deep (`-c status.showUntrackedFiles=all`,
-and ignored-but-present content run through the same artifact check the rest of this file uses, so
-the embedded repo's own `node_modules` doesn't re-brick the gate the way this repo's own once did).
-The waiver side of the same hole is closed differently: rather than classify an embedded repo's
-ignored content, a waiver now refuses outright the moment a gitlink has ANY of it, since
-individually verifying it runs into the same `is_artifact` path-shape problem named below.
+Record a sign-off once all four have returned PASS, so there's still a durable trail even without a
+hook reading it:
 
-`-c core.quotePath=false`, used throughout this file to read a non-ASCII path correctly, is NOT
-the same guarantee as `-z`: git still C-quotes a literal `"`, `\`, a control byte, or a newline
-regardless of that setting, and three `git status --porcelain --ignored=matching` call sites relied
-on it alone against LINE-based output — a quoted line broke the `sed`-based extraction downstream,
-and a whole ignored directory silently vanished from the hash with no refusal at all. Closed with a
-shared function, `ignored_matching_paths` in `work-hash.sh`, that reads `-z` output via NUL-delimited
-`read -d ''` instead. Index bits (`skip-worktree`/`assume-unchanged`) are also now checked ONE LEVEL
-into a linked worktree or an embedded gitlink, not just in the outer repo's own index — git's index
-is per-worktree and per-embedded-repo, so the same bits set inside either hide a modification from
-THAT repo's own status the identical way they do outside.
+```bash
+bash .claude/hooks/review-board-signoff.sh \
+  --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor \
+  --note "one line per finding: fixed how, or refuted with what evidence"
+```
 
-A path containing a literal NEWLINE byte is the one case `-z` alone cannot fully carry through: this
-file's enumerations still emit paths newline-joined for compatibility with every existing consumer,
-so such a path would corrupt a re-serialization step downstream even though it was read correctly at
-the point of NUL-delimited parsing. Rather than attempt full NUL-safety through every consumer, the
-gate detects this specific condition at its two enumeration points (`ignored_matching_paths` and
-`walk_hidden_dir`, both in `work-hash.sh`) and refuses outright via a shared sentinel
-(`NEWLINE_IN_PATH_SENTINEL`) — the fail-closed direction, not a silent hash collision.
+Each run truncates the file, so name all four in one invocation — there is deliberately no `--all`:
+four members is four separate assertions, each claiming a specific reviewer examined this exact
+work. Establish the baseline once with `bash .claude/hooks/review-board-signoff.sh --initialize`;
+each sign-off or waiver after that advances it, so the next body of work is measured from there.
 
-**Known, disclosed limitations — not fixed, not silently unmentioned:**
-
-- `is_artifact`, applied to a gitlink's ignored-but-present content, sees paths relative to the
-  GITLINK's own root, not the outer repo's. That's the right answer for an embedded `node_modules`
-  (an artifact wherever it sits) and the wrong one for an embedded route that happens to share a
-  name with an `ARTIFACT_DIRS` entry — an embedded `build/+page.svelte`, ignored by that repo's own
-  `.gitignore`, reads as an artifact and two completely different bodies of it hash identically.
-  Prefixing the outer path fixes that and breaks the `node_modules` case instead, so the two
-  directions are not both satisfiable by this function as designed; see the comment above
-  `gitlinks=` in `work-hash.sh`.
-- None of this recurses, but narrower than "any nesting is invisible": an ordinarily DIRTY nested
-  gitlink (uncommitted changes, no ignore rule involved) still surfaces, because git's own
-  `--ignore-submodules=none` reporting propagates a nested submodule's dirtiness up through each
-  level on its own. What actually escapes is content the NESTED repo's own `.gitignore` hides, OR an
-  index bit set inside it — that gitlink-within-a-gitlink, or a gitlink embedded inside a linked
-  worktree, reads clean at every level this file enumerates, since neither the ignored-content scan
-  nor the index-bits check (the fixes for the one-level case above) are applied recursively. A stash
-  taken INSIDE an embedded repo is likewise outside what the outer stash count sees.
-
-A configured **clean filter** (`filter.<name>.clean`, wired to a path via `.gitattributes`) is a
-different class from all of the above: it doesn't hide a path from enumeration, it transforms a
-path's content before ANY diff is computed against it, including inside the throwaway index. A
-clean command that reconstructs whatever was last reviewed makes `git diff` report no change at
-all while the real file is completely different — `--no-ext-diff --no-textconv` guards external
-diff drivers and textconv, but neither touches this, and there is no `--no-filters` to ask for the
-untransformed comparison. The gate now refuses outright the moment any path in scope — tracked or
-not — carries a filter attribute with a configured `clean` command, since it cannot verify what
-such a path really changed. No path in this repo is wired to a filter via `.gitattributes` today,
-so the refusal is preventive — though `filter.lfs.clean` is already present in this machine's
-global git config, so `git lfs track` alone is enough to trip it. The refusal is also, deliberately,
-not selective about _which_ filter (Git LFS included), because a constant-output clean command and
-a legitimately content-derived one are indistinguishable from here without running arbitrary,
-untrusted commands to find out.
-
-An in-tree `.gitignore` rule no longer grants a blanket pass: the carve-out was sound only for
-_new_ rules, and this repo's own unanchored `tmp/` and `test-results` match under `src/`. Two
-bounds keep that from hashing the world, and the shape of both was earned the hard way. Artifact
-detection is a single left-to-right **segment scan**, first match wins: `src/routes/build/x` is
-kept because `src` comes first, `coverage/lcov-report/src/a.html` is dropped because `coverage`
-does. Two earlier versions used two lists ordered opposite ways and produced the same bug twice —
-once hiding a real route named `build`, once hashing 3000 Istanbul files at seven seconds. The
-hashable set is a **denylist** of opaque blobs (images, archives, fonts, `.map`, `.lock`), not an
-allowlist: an allowlist is the mistake this file's own header warns about, and it had been
-silently dropping `.scss`, `.mts`, `.jsx`, `.tsx` and `.vue` under a hidden `src/`.
-
-Two caveats the docs previously got backwards. A path hidden by an **external** source is hashed
-whatever it is, so an externally-ignored `.env` does move the hash — it stays out of this repo
-only because `.gitignore` also lists it, which makes the source in-tree. And machine noise is
-exempt by name: `.DS_Store`, `Thumbs.db`, `.localized`, and `.claude/settings.local.json`, the last because
-Claude Code rewrites it on a permission grant, which let the gate invalidate its own sign-off
-through an action it had just provoked.
-
-`WORK_DENY` applies to the hidden-file enumeration as well as to the diff. It did not, once, and
-the two paths were effectively separate implementations of "what is work" — which is why four
-consecutive rounds each found a new hole in a different leaf predicate. When an external rule hid
-the state directory, that gap livelocked the gate outright: four PASSes printed "cleared", the
-gate blocked anyway, and every retry wrote two more sign-off files that moved the hash further
-from the one just approved. There is now an explicit check for that, so the class fails with a
-message instead of a loop.
-
-Run `bash .claude/hooks/review-board-gate.test.sh` after touching any of this — 108 probes, not
-wired into `bun run test`, so it only runs when someone types it.
-
-Do not read a green suite as an audit ledger. Most probes have been shown to fail when the thing
-they name is broken, but not all of them, and the set that has is not identifiable from the file.
-Two failure modes have shipped repeatedly and both look identical to coverage: a probe that passes
-through a fallback branch rather than the guard it names, and a probe whose fixture never reaches
-the code it targets. A round of review found three live instances of the first — the `.cjs`
-config-symlink probe and both `src/` → `docs/` symlink probes were asserting only that an
-_untracked_ link blocks (true with the guard deleted), because they pointed at `docs/`, which left
-`WORK_DENY` once the bundler turned out to resolve imports into it and so is ordinary reviewable
-work the gate blocks on regardless. Retargeted at real `WORK_DENY` paths, with no fallback branch
-left to pass through. The second failure mode is why the waiver-side arms were unpinned for
-several rounds while their hash-side twins were covered. One probe is labelled `[unproven]` in its
-own name; that label marks a guard nobody has found a discriminating fixture for, not the only
-unverified probe — treat every probe in this file as a claim to re-verify by deleting its guard,
-not as settled coverage.
-
-**A Stop hook cannot police its own disablement, so do not rely on the gate to catch its own
-neutering.** `review-board-gate.sh` sources `work-hash.sh` before it computes scope, so an edit
-redefining `compute_work_hash` to return empty takes effect ahead of the check that would have
-flagged it. That is the narrowest form: appending `exit 0` to the gate itself does the same with
-no sourcing involved, and removing the `Stop` entry from `.claude/settings.json` means the hook
-never runs at all. All three verified by hand, not theorised. It is a fail-open in a mechanism whose stated design is to fail
-closed, and it is written here rather than only in a commit message so the next reader finds it.
-
-Record a sign-off with `bash .claude/hooks/review-board-signoff.sh --pass <reviewer> --pass ...`,
-naming all four in a **single** invocation — each run truncates the file, so four separate runs
-leave you with one pass, not four. There is deliberately no `--all`: four members is four
-separate assertions, each claiming a specific reviewer examined this exact work.
-
-**Not every change earns four agents.** When the board is genuinely disproportionate, waive it:
-`--waive --grounds <ground> --reason "..."`. The grounds are `formatting-only`, `comments-only`,
-`revert-of-cleared`, `generated-artifact`, and `advisor-approved` — the last meaning you asked a
-human and they said proceed, which you may do at any point rather than grinding. A waiver clears
-the gate with no reviewer, but it names its grounds, carries a written reason, and is recorded
-beside the sign-offs, so the call can be audited later. Both are required: a ground with no reason
-is a bypass button, and a reason that would not convince someone reading it in a month is not a
-reason. Waiving work that touches behavior is how this whole mechanism becomes theatre.
-
-**Anything with a rendered surface is refused outright, whatever ground you name.** `WAIVER_NEVER`
-in `work-hash.sh` currently covers `src/`, `static/`, `.svelte`, `.html`, `.css`, the build
-config that decides what SSRs (`vite.config.ts`, `svelte.config.js`, `postcss.config.cjs`,
-`tailwind.config.ts`), and `package.json` / `bun.lock`, which pin the component versions — this repo has no `svelte.config.js`, so `vite.config.ts` is where the
-`sveltekit()` plugin lives. The refusal also reaches work hidden from an ordinary diff — a component concealed by
-`.git/info/exclude` or a global excludes file, a route moved out of `src/` by `git mv`, a path
-with a non-ASCII segment, or anything parked in a stash. Every ground is a claim about the diff
-that nothing verifies, so `formatting-only` after running prettier over a component would
-otherwise be a silent, complete bypass of the a11y and hydration review. Expect the refusal there
-and convene the board; the waiver is for work confined to `.claude` and `scripts` — not config, which decides what SSRs, and not `package.json`, which decides which component implementation does.
-
-Work is measured from the **last commit the board cleared**, not from a remote—this repo has no remote, and an "unpushed commits" definition would let committing bypass the gate entirely, which is exactly what you do before declaring done. Committing after a PASS does not invalidate it, since the hash covers content rather than whether that content has been committed. The baseline is established deliberately with `--initialize` (see above), not adopted automatically from `HEAD`, so installing the gate does not retroactively demand review of existing history but also does not silently baseline itself the first time the gate runs.
+**Not every change earns four agents.** When the board is genuinely disproportionate, waive it
+instead: `--waive --grounds <ground> --reason "..."`. Grounds are `formatting-only`,
+`comments-only`, `revert-of-cleared`, `generated-artifact`, and `advisor-approved` — the last
+meaning you asked a human and they said proceed, which you may do at any point rather than
+grinding. Both a ground and a written reason are required: a ground with no reason is a bypass
+button, and a reason that would not convince someone reading it in a month is not a reason.
+`review-board-signoff.sh` still refuses to _record_ a waiver, whatever ground you name, for
+anything touching a rendered surface — `WAIVER_NEVER` in `work-hash.sh` covers `src/`, `static/`,
+`.svelte`, `.html`, `.css`, the build config that decides what SSRs and how it hydrates
+(`vite.config.ts`, `svelte.config.js`, `postcss.config.cjs`, `tailwind.config.ts` — this repo has
+no `svelte.config.js`, so `vite.config.ts` is where the `sveltekit()` plugin actually lives), and
+`package.json` / `bun.lock`, which pin the component versions. That refusal is the
+script declining to write a waiver file for you, not a gate stopping the edit — you can still skip
+recording anything and proceed unreviewed, which is exactly the discipline this section is asking
+you not to exercise. Waiving work that touches behavior is how this whole mechanism becomes
+theatre; if you're reaching for a waiver because the board would be slow or would probably find
+something, that's the case where you convene it instead.
 
 Three agents assist rather than review: **exercise-builder** for new `/exercises` routes and
 specs, **upstream-fixer** for driving the loop above end to end, and **anchor-cartographer** for
@@ -472,14 +438,17 @@ all produce nothing. So "no notice" is not evidence that nothing changed.
 **Subagents mostly don't receive these, but not universally — three observed cases, stated
 plainly rather than as one unified rule, since a round-7 attempt at a single mechanism turned
 out to be contradicted by its own neighboring case.** A subagent's own out-of-band write (its
-own Bash `cp` restoring a file it had read) produces no notice to that subagent — two reviewers
-independently confirmed this, and it is still the load-bearing case for a subagent auditing its
-own restores. A main session's own out-of-band write (the identical `cp` shape, run by the main
+own Bash `cp` restoring a file it had read) **usually** produces no notice to that subagent — two
+reviewers independently observed this — but not reliably: a later reviewer running seven
+break-and-restore cycles received exactly one, on its first `cp` restore. Expect anywhere from
+zero to one per restored file, which is what `.claude/agents/test-integrity-auditor.md` tells that
+reviewer directly; this passage used to say "no notice" flatly and contradicted its own agent file
+until a `contract-auditor` round caught the two side by side. A main session's own out-of-band write (the identical `cp` shape, run by the main
 session instead) does produce a notice, in that main session. And a round-7 contract-auditor
 subagent received a notice for `CLAUDE.md` while the orchestrating main session concurrently
 edited it through an ordinary Edit call — a third shape again, distinct from the first two. Do
 not generalize these into "in-band vs out-of-band" or "subagent vs main" as if either alone
-decided it; both have now been shown to have an exception. If you are a subagent and a notice
+decided it; all three have now been shown to have an exception. If you are a subagent and a notice
 arrives, it is not automatically evidence of tampering — check whether the orchestrating session
 could plausibly have made an ordinary edit to that file, and verify the content the same way as
 always: by hash or by re-deriving it, not by trusting the snippet.
@@ -523,7 +492,7 @@ code. If you cannot account for the write, treat it as unexplained and say so.
 ```bash
 # chatroom
 bun run dev              # dev server
-bun run sync:cinder      # bump @lostgradient/cinder + @lostgradient/chat to latest, re-verify
+bun run sync:cinder      # bump all five upstream packages (cinder, chat, editor, markdown, armorer), re-verify
 bun run check             # svelte-kit sync + svelte-check
 bun run check:upstream    # every `upstream:` marker's issue is still open
 bun run check:peers       # re-declared deps still match their owning package's range

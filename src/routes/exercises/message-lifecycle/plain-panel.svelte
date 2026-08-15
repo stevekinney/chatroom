@@ -66,11 +66,14 @@
 
 <section style="flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.5rem;">
 	<h2 style="margin: 0;">Callback-only (no adapter)</h2>
-	{#if errorB}
-		<p role="alert" data-testid="plain-error" style="margin: 0; color: var(--cinder-danger);">
-			{errorB}
-		</p>
-	{/if}
+	<!-- Always rendered, never `{#if}`-gated. A live region has to exist in the
+	     DOM before the content arrives: mounting one that already has text is not
+	     reliably announced, which is the pattern Chat's own
+	     `chat-status-announcer.svelte` documents and follows. Padding is applied
+	     only when populated so an empty region takes no layout. -->
+	<p role="alert" data-testid="plain-error" style="margin: 0; color: var(--cinder-danger);">
+		{errorB ?? ''}
+	</p>
 	<div style="flex: 1; min-height: 0; display: flex; gap: 0.5rem;">
 		<div style="flex: 2; min-height: 0; display: flex; flex-direction: column;">
 			<Chat

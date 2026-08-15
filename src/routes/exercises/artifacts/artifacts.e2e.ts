@@ -49,6 +49,10 @@ test('opens, closes, and reopens an artifact from conversation activity', async 
 	await page.getByRole('button', { name: 'Close artifact panel' }).click();
 	await expect(panel).toHaveCount(0);
 	await expect(layout).toHaveAttribute('data-panel-open', 'false');
+	// A11Y-2 / cinder#1299: the panel's own focusOnMount captured whatever had
+	// focus before it opened — the row button that opened it — and restores
+	// it on close instead of dropping focus to <body>.
+	await expect(openHero).toBeFocused();
 
 	const reopen = page.getByTestId('reopen-artifact');
 	await expect(reopen).toHaveText('Reopen "Landing Page Hero"');

@@ -140,15 +140,114 @@ async function clearSelection(page: Page): Promise<void> {
 	await page.evaluate(() => document.getSelection()?.removeAllRanges());
 }
 
+// HOW THE THREE "no popover appears" TESTS BELOW ARE TIMED, AND WHY IT IS NOT A
+// POLL.
+//
+// They used to sleep 400ms after the gated gesture, on the grounds that the
+// component debounces `selectionchange` by 20ms. Converting that to
+// `expect.poll` is not possible, and the reason is worth stating rather than
+// discovering: when the debounce fires and DECLINES, it writes nothing
+// observable. Its callback's entire effect is assigning two private `$state`
+// variables that feed `showSelectionPopover` and nothing else — no attribute, no
+// class, no prop callback, no announcement. There is no condition to poll on,
+// because the component's answer to "should I show this?" is only ever expressed
+// by the popover existing.
+//
+// So the wait is a temporal CONTROL instead: perform the identical gesture on an
+// UNGATED instance and wait for ITS popover with an auto-retrying matcher. That
+// matcher does not resolve until the component has taken a `selectionchange`
+// through the debounce and out the other side, which is the exact event the
+// gated instances are being asserted not to have produced. It is a clock made of
+// the mechanism under test, and it is self-calibrating: if the debounce ever
+// grows, the control waits longer too, which is precisely what a fixed 400ms
+// could not do.
+//
+// Two facts make it sound, and both are dependencies rather than decoration:
+//
+//   1. The gated instance has had ample opportunity to produce a popover before
+//      anything is concluded from its not having done so. `selectText` burns at
+//      least ~100ms of in-page time per call, in its scroll-quiescence loop (the
+//      `while` above enters true and sleeps 25ms a turn until 100ms of quiet), so
+//      each gated instance's own 20ms window has expired several times over by
+//      the time the control gesture is even issued. Note that this is about
+//      OPPORTUNITY, not about when the assertion samples: `watchForPopover` below
+//      records the whole interval, so shortening that loop would not make the
+//      absence assertion pass for the wrong reason — it would only narrow the
+//      window in which a real popover had a chance to be recorded.
+//   2. The absence is structurally gated, not merely slow: `showSelectionPopover`
+//      is `$derived` with `mode === 'edit'` and `currentUserId !== undefined` in
+//      it, and the readonly/exotic instances additionally never get as far as
+//      scheduling the timer (the handler returns early on `mode !== 'edit'`). The
+//      control proves the gesture works; the derived is why the gated instances
+//      cannot produce a popover at any delay whatsoever.
+//
+// One thing the control DOES cost, and `watchForPopover` below is the repayment.
+// Handing the clock to a second instance means the gated instance's selection has
+// been replaced by the time its absence is asserted — so a bare `toHaveCount(0)`
+// at the end would be satisfied by a popover that appeared and was torn down in
+// between, which is precisely the failure it is supposed to catch. The old sleep
+// did not have that hole (it asserted with the selection still standing) and the
+// replacement must not open one. So the absence is recorded across the WHOLE
+// interval rather than sampled at the end of it, which is strictly stronger than
+// either shape: the sleep could only ever prove "not present at 400ms".
+
 /**
- * The component debounces its `selectionchange` handler by 20ms before it will
- * even consider showing the selection popover, so an absence assertion that
- * fires inside that window proves nothing. Wait an order of magnitude longer,
- * then confirm the selection is still standing — and, in the same test, show
- * the identical gesture producing a popover in an ungated instance. Between
- * them, the wait is demonstrably ample rather than merely long.
+ * Start recording whether a portaled popover is EVER inserted, from now on.
+ *
+ * Reads the mutation records rather than re-querying the document in the
+ * callback: MutationObserver delivers at a microtask checkpoint, so a node added
+ * and removed before that checkpoint is invisible to a `getElementById` inside
+ * the callback and perfectly visible in `addedNodes`. A popover that flickered
+ * for one task is exactly the regression worth catching.
  */
-const SELECTION_SETTLE_MS = 400;
+type PopoverWatch = {
+	__popoverSeen?: Record<string, boolean>;
+	__popoverWatchers?: MutationObserver[];
+};
+
+async function watchForPopover(page: Page, popoverId: string): Promise<void> {
+	await page.evaluate((id) => {
+		const win = window as unknown as PopoverWatch;
+		const seen = (win.__popoverSeen ??= {});
+		const watchers = (win.__popoverWatchers ??= []);
+		seen[id] = document.getElementById(id) !== null;
+		const observer = new MutationObserver((records) => {
+			for (const record of records) {
+				for (const node of record.addedNodes) {
+					if (!(node instanceof Element)) continue;
+					if (node.id === id || node.querySelector(`[id="${id}"]`)) seen[id] = true;
+				}
+			}
+		});
+		observer.observe(document.body, { childList: true, subtree: true });
+		watchers.push(observer);
+	}, popoverId);
+}
+
+/** Whether `watchForPopover` has seen that popover at any point since it started. */
+function popoverEverAppeared(page: Page, popoverId: string): Promise<boolean> {
+	return page.evaluate(
+		(id) => (window as unknown as PopoverWatch).__popoverSeen?.[id] ?? false,
+		popoverId
+	);
+}
+
+/**
+ * Tear the watchers down again.
+ *
+ * These describe blocks share one page across their tests, and a body-wide
+ * `childList` observer left running would keep firing through the typing tests
+ * that come later. Resetting the record as well means the ids are reusable
+ * rather than sticky, so a later test cannot inherit a `true` it did not cause.
+ */
+async function stopWatchingPopovers(page: Page): Promise<void> {
+	await page.evaluate(() => {
+		const win = window as unknown as PopoverWatch;
+		for (const observer of win.__popoverWatchers ?? []) observer.disconnect();
+		win.__popoverWatchers = [];
+		win.__popoverSeen = {};
+	});
+}
 
 /**
  * Record every live-region announcement inside an instance.
@@ -288,28 +387,54 @@ test.describe('review-modes: mode is reflected everywhere and enforced in one pl
 		const exoticPopover = page.locator('#modes-exotic-selection-popover');
 		const editPopover = page.locator('#modes-edit-selection-popover');
 
+		// Recording starts before the first gesture, so what is asserted at the end
+		// is "never appeared", not "not present right now".
+		await watchForPopover(page, 'modes-readonly-selection-popover');
+		await watchForPopover(page, 'modes-exotic-selection-popover');
+
 		// Readonly text is still selectable — the block lives in the component's
 		// handler (`if (mode !== 'edit') { … return; }`), not in the browser.
+		//
+		// `currentSelection` immediately after, rather than after a delay: it is a
+		// SEPARATE page evaluate in a later task, so a component (or a ProseMirror
+		// observer) that stomped the selection synchronously or on a microtask
+		// would show up here. What the old 400ms added on top of that was a longer
+		// window for a stomp that never had a mechanism; the absence claim it was
+		// really protecting is timed by the control below instead.
 		expect(await selectText(page, 'modes-readonly', 'dashboard')).toBe('dashboard');
-		await page.waitForTimeout(SELECTION_SETTLE_MS);
 		expect(await currentSelection(page)).toBe('dashboard');
-		await expect(readonlyPopover).toHaveCount(0);
 
 		// `showSelectionPopover` requires `mode === 'edit'` exactly, so the
 		// out-of-union mode is gated out from the other side: an editable
 		// document with no way to comment on it.
 		await clearSelection(page);
 		expect(await selectText(page, 'modes-exotic', 'dashboard')).toBe('dashboard');
-		await page.waitForTimeout(SELECTION_SETTLE_MS);
 		expect(await currentSelection(page)).toBe('dashboard');
-		await expect(exoticPopover).toHaveCount(0);
 
-		// The control that makes both absences mean something: the identical
-		// gesture in the edit instance produces the popover, well inside the
-		// settle window used above.
+		// The control does two jobs, and the second is the reason it moved up here
+		// from the bottom of the test. It shows the identical gesture producing a
+		// popover in an ungated instance — and, because the assertion below it is
+		// auto-retrying and does not resolve until the component has carried a
+		// `selectionchange` all the way through its 20ms debounce, it is also the
+		// CLOCK for the two absences that follow. See the note above `test.describe`
+		// for why a poll is unavailable and a control is the honest substitute.
 		await clearSelection(page);
 		expect(await selectText(page, 'modes-edit', 'dashboard')).toBe('dashboard');
 		await expect(editPopover).toHaveCount(1);
+
+		// Now the absences mean something. Both gated instances took the identical
+		// gesture — readonly two `selectText` calls back, exotic one, so ≥200ms and
+		// ≥100ms of in-page time respectively, against a 20ms debounce — and an
+		// ungated instance has since carried the same gesture all the way to a
+		// mounted popover. The recorded reads are the load-bearing pair: they cover
+		// every instant since before the first gesture. The live counts are kept
+		// underneath them because they also fail if a popover is present *now*,
+		// which a record of past insertions would not report.
+		expect(await popoverEverAppeared(page, 'modes-readonly-selection-popover')).toBe(false);
+		expect(await popoverEverAppeared(page, 'modes-exotic-selection-popover')).toBe(false);
+		await expect(readonlyPopover).toHaveCount(0);
+		await expect(exoticPopover).toHaveCount(0);
+
 		await expect(editPopover).toHaveAttribute('role', 'toolbar');
 		await expect(editPopover).toHaveAttribute('aria-label', 'Selection actions');
 		await expect(editPopover.getByLabel('Add comment')).toHaveCount(1);
@@ -318,6 +443,7 @@ test.describe('review-modes: mode is reflected everywhere and enforced in one pl
 		// page clean for the next test.
 		await clearSelection(page);
 		await expect(editPopover).toHaveCount(0);
+		await stopWatchingPopovers(page);
 	});
 
 	test('readonly strips the sidebar of every mutating affordance but keeps the thread list', async () => {
@@ -478,17 +604,38 @@ test.describe('review-modes: currentUserId has three states, not two', () => {
 	test('an omitted currentUserId blocks the selection popover; an empty-string one does not', async () => {
 		// `showSelectionPopover` tests `currentUserId !== undefined`. That single
 		// check is the entire difference between these two instances.
-		expect(await selectText(page, 'modes-nouser', 'dashboard')).toBe('dashboard');
-		await page.waitForTimeout(SELECTION_SETTLE_MS);
-		expect(await currentSelection(page)).toBe('dashboard');
-		await expect(page.locator('#modes-nouser-selection-popover')).toHaveCount(0);
+		const nouserPopover = page.locator('#modes-nouser-selection-popover');
+		const emptyuserPopover = page.locator('#modes-emptyuser-selection-popover');
 
+		// Same recording-before-the-gesture shape as the readonly test, and needed
+		// for the same reason: the control gesture replaces this instance's
+		// selection, so the end-of-test count alone could not tell "never appeared"
+		// from "appeared and was torn down".
+		await watchForPopover(page, 'modes-nouser-selection-popover');
+
+		expect(await selectText(page, 'modes-nouser', 'dashboard')).toBe('dashboard');
+		expect(await currentSelection(page)).toBe('dashboard');
+
+		// `modes-emptyuser` is the control, and therefore the clock — same reasoning
+		// as the readonly test, and worth noting that this instance is a sharper
+		// control than the edit one would be: it differs from `modes-nouser` in the
+		// single prop under test and in nothing else, so the popover appearing here
+		// and not there isolates `currentUserId !== undefined` exactly.
+		//
+		// Note also that the gate is entirely in the derived. Unlike the readonly
+		// case, the debounced handler runs to completion for `modes-nouser` and
+		// writes a real `selectionPopoverPosition`; only `showSelectionPopover`
+		// declines to render it.
 		await clearSelection(page);
 		expect(await selectText(page, 'modes-emptyuser', 'dashboard')).toBe('dashboard');
-		await expect(page.locator('#modes-emptyuser-selection-popover')).toHaveCount(1);
+		await expect(emptyuserPopover).toHaveCount(1);
+
+		expect(await popoverEverAppeared(page, 'modes-nouser-selection-popover')).toBe(false);
+		await expect(nouserPopover).toHaveCount(0);
 
 		await clearSelection(page);
-		await expect(page.locator('#modes-emptyuser-selection-popover')).toHaveCount(0);
+		await expect(emptyuserPopover).toHaveCount(0);
+		await stopWatchingPopovers(page);
 	});
 
 	test('an omitted currentUserId renders `Delete thread` disabled and drops the reply composer', async () => {
@@ -581,7 +728,22 @@ test.describe('review-modes: currentUserId has three states, not two', () => {
 		// TRUTHINESS test, where the visibility gate was `!== undefined`. The
 		// empty string passes one and fails the other, so the flow is offered in
 		// full and dropped at the last step.
-		await expect(popover).toHaveCount(0);
+		//
+		// Asserting the COMPOSER is gone, not the popover. `toHaveCount(0)` on the
+		// popover was pinning a transient: the refusal calls `clear()`, which drops
+		// the position and the expanded flag — but `clear()` is not a close-latch,
+		// and visibility is derived from a live selection that still has 'dashboard'
+		// in it, so the 20ms `selectionchange` debounce re-mounts the popover in its
+		// collapsed icon state. Per-frame sampling found the absent window is only
+		// ~16-27ms wide in every engine (chromium 24-40ms, webkit 50-69ms, firefox
+		// 63-80ms); Chromium happened to sample inside it and the other two did not.
+		//
+		// So this is a Chromium-specific assumption being corrected, not a WebKit
+		// bug — and the replacement pins strictly more than the original did. The
+		// durable, engine-independent claim is that the composer was dismissed and
+		// the typed body discarded, while the affordance itself remains offered.
+		await expect(popover.getByLabel('Comment text')).toHaveCount(0);
+		await expect(popover.getByRole('button', { name: 'Add comment' })).toHaveCount(1);
 		await expect(page.getByTestId('modes-emptyuser-threadcreate-count')).toHaveText(
 			'threadcreate: 0'
 		);
@@ -633,18 +795,53 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 	});
 
 	test('snapshotMode suppresses the caret and the selection highlight on the container and every descendant', async () => {
-		// The rule is `[data-snapshot-mode], [data-snapshot-mode] *`, so it
-		// reaches the container itself AND the ProseMirror several levels below.
-		// Computed style is the only way to observe a universal selector's
-		// reach; these are CSS keywords and a fully transparent color, not
-		// measurements.
+		// The authored rule is `[data-snapshot-mode], [data-snapshot-mode] *` — but
+		// the descendant half does NOT reach the ProseMirror, and never has, in any
+		// engine. This test used to claim it did, and passed in Chromium for an
+		// unrelated reason. Firefox is what noticed.
+		//
+		// Inside a Svelte `<style>` the `*` compiles to `:where(.svelte-…)`, so the
+		// descendant half can only match elements the component itself rendered.
+		// `.milkdown` and `.ProseMirror` are created at runtime by Milkdown and
+		// carry no scope class, so `element.matches(<compiled selector>)` is false
+		// for them — verified in Chromium too, not just Firefox. What Chromium was
+		// showing is Blink INHERITING `user-select`, which css-ui-4 defines as
+		// non-inherited and which Gecko implements as such. So Firefox's `auto`
+		// there is the spec-correct value.
+		//
+		// `caret-color` is genuinely inherited, which is why only the `user-select`
+		// key diverged — and it is why the caret half of these assertions really
+		// was measuring what it claimed. Those stay exactly as they were.
+		//
+		// What replaces the false key pins strictly more: `.markdown-editor-wrapper`
+		// is the last scope-classed ancestor, i.e. the true boundary of the rule.
+		// Asserting `none` there catches a regression that broke the container rule,
+		// which the old `.ProseMirror` read could not distinguish from inheritance.
+		//
+		// `user-select` is read under BOTH spellings, and that is not defensive
+		// padding: WebKit does not implement the unprefixed property at all
+		// (`CSS.supports('user-select', 'none')` is false there), so the
+		// unprefixed read returns `''` and only `-webkit-user-select` carries the
+		// value. Reading one name and getting `''` would have looked exactly like
+		// "the rule does not reach this element", which is the claim this test
+		// exists to make — a false negative dressed as a finding. The expected
+		// value stays exactly `'none'`: the suppression genuinely happens in
+		// WebKit, it is just spelled differently.
 		const readStyles = (scope: Locator) =>
 			scope.evaluate((container) => {
 				const editor = container.querySelector('.ProseMirror')!;
+				const wrapper = container.querySelector('.markdown-editor-wrapper')!;
+				const select = (element: Element) => {
+					const computed = getComputedStyle(element);
+					return (
+						computed.getPropertyValue('user-select') ||
+						computed.getPropertyValue('-webkit-user-select')
+					);
+				};
 				return {
-					containerSelect: getComputedStyle(container).userSelect,
+					containerSelect: select(container),
 					containerCaret: getComputedStyle(container).caretColor,
-					editorSelect: getComputedStyle(editor).userSelect,
+					wrapperSelect: select(wrapper),
 					editorCaret: getComputedStyle(editor).caretColor
 				};
 			});
@@ -652,15 +849,21 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 		expect(await readStyles(surface(frame(page, 'modes-snapshot')))).toEqual({
 			containerSelect: 'none',
 			containerCaret: 'rgba(0, 0, 0, 0)',
-			editorSelect: 'none',
+			wrapperSelect: 'none',
 			editorCaret: 'rgba(0, 0, 0, 0)'
 		});
 
 		// The control: without the attribute nothing is suppressed, and the
 		// caret keeps a real, opaque color.
+		//
+		// A SET rather than a literal, because `auto` and `text` are the same
+		// answer spelled two ways — the initial value's used value chains from the
+		// parent, and the engines serialize that differently. Naming both keeps the
+		// claim exact ("selectable"); `not.toBe('none')` would have been vaguer,
+		// and a bare `'auto'` was asserting a Chromium spelling.
 		const plain = await readStyles(surface(frame(page, 'modes-plain')));
-		expect(plain.containerSelect).toBe('auto');
-		expect(plain.editorSelect).toBe('auto');
+		expect(['auto', 'text']).toContain(plain.containerSelect);
+		expect(['auto', 'text']).toContain(plain.wrapperSelect);
 		expect(plain.containerCaret).not.toBe('rgba(0, 0, 0, 0)');
 		expect(plain.editorCaret).not.toBe('rgba(0, 0, 0, 0)');
 	});
@@ -710,8 +913,22 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 		// `style:--editor-placeholder="'{escaped}'"` with no emptiness check, so
 		// it is present on a fully populated document too — and it arrives as a
 		// QUOTED CSS string, ready for `content:`, not as a bare value.
-		expect(await inlinePlaceholder('modes-plain')).toBe("'Start reviewing…'");
-		expect(await inlinePlaceholder('modes-edit')).toBe("'Start writing...'");
+		//
+		// The quote CHARACTER is engine serialization, not component behavior:
+		// Chromium and Firefox hand back the author's original token text, while
+		// WebKit re-serializes string tokens with double quotes. The component
+		// writes `'…'` in all three. Pinning the engine's spelling keeps the real
+		// claim — that it is quoted at all, and therefore usable by `content:` —
+		// exact, rather than weakening it to a substring match.
+		//
+		// `test.info().project.name` rather than the `browserName` fixture: this
+		// callback takes no arguments (the suite shares a module-level `page`), so
+		// the fixture is not destructurable here.
+		const quoted = (text: string) =>
+			test.info().project.name === 'webkit' ? `"${text}"` : `'${text}'`;
+
+		expect(await inlinePlaceholder('modes-plain')).toBe(quoted('Start reviewing…'));
+		expect(await inlinePlaceholder('modes-edit')).toBe(quoted('Start writing...'));
 
 		// PINNED KNOWN BUG — this is what the shipped build does, not what the
 		// component intends. The stylesheet paints the placeholder through

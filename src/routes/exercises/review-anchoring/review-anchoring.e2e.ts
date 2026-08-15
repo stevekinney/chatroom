@@ -18,22 +18,59 @@ import type { Page } from '@playwright/test';
 // ProseMirror transactions rather than typing — a keyboard-driven repro cannot
 // land two edits inside 300ms on purpose, and cannot land them 450ms apart on
 // purpose either.
+//
+// That debounce used to be waited out with fixed sleeps — 900ms four times over
+// and 1400ms once. Every one of them is gone, and not because the numbers were
+// too small. A sleep can only ever say "nothing had happened yet by the time I
+// looked", which is the weakest possible reading of "nothing happens": it
+// passes for a regression that schedules a re-anchoring pass 901ms out, and it
+// says nothing at all about the case the two edge-insertion tests actually care
+// about, where no pass is ever scheduled in the first place. The plugin's own
+// `needsReanchor` flag is the variable that decides that, so the page publishes
+// it (see `anchorState` below) and the tests assert on it directly. Where a
+// pass IS expected, the auto-retrying matcher that observes its result is the
+// wait, and no separate sleep is needed to license the assertions after it.
 
 const ROUTE = '/exercises/review-anchoring';
 
 /** The page mounts five ReviewEditors. */
 const INSTANCE_COUNT = 5;
 
-// The plugin debounces deferred re-anchoring 300ms after the last document
-// change. An assertion about something NOT happening has to outlast that; an
-// assertion about something happening uses an auto-retrying matcher instead.
-const SETTLE_MS = 900;
+/** What `window.__anchorState(name)` reports; built by the page. */
+type AnchorProbe = { needsReanchor: boolean; statuses: Record<string, string> };
 
-// `drift-move-slow` reinserts the deleted word 450ms after deleting it. Waiting
-// past the paste AND the debounce it restarts is the only way to see the
-// re-anchoring pass that the restored text triggers (cinder#1284: it recovers
-// the orphaned anchor; it used to have no thread left to recover).
-const LATE_PASTE_SETTLE_MS = 1400;
+/**
+ * The anchor plugin's live state for one instance, read off the page.
+ *
+ * `needsReanchor` is the whole point. `anchor-decorations.js`'s plugin view
+ * returns from `update` before it touches `setTimeout` unless the flag is set,
+ * so `needsReanchor: false` is not "the deferred pass has finished" — it is "no
+ * deferred pass was ever scheduled", which is a claim no wait can make. It also
+ * fails LOUDLY in the direction that matters: a regression that starts
+ * scheduling a pass flips the flag on the first read instead of hiding behind a
+ * longer sleep.
+ *
+ * The flag returns to false after a pass completes, including for an anchor the
+ * pass has just orphaned (the sync handler deliberately declines to re-raise it
+ * for an already-orphaned anchor, which would otherwise loop forever on an idle
+ * document). So it is a complete, non-repeating settled signal in both
+ * directions, and `statuses` is carried alongside it because "no pass is
+ * pending" and "the anchor is placed" are separate claims — an anchor that
+ * failed to re-anchor also reports `needsReanchor: false`, just with a status of
+ * `orphaned`.
+ */
+async function anchorState(
+	page: Page,
+	instance: 'drift' | 'offbyone'
+): Promise<AnchorProbe | null> {
+	return page.evaluate(
+		(name) =>
+			(window as unknown as { __anchorState: (name: string) => AnchorProbe | null }).__anchorState(
+				name
+			),
+		instance
+	);
+}
 
 /** The drift instance's anchor exactly as the page seeds it. */
 const SEEDED_DRIFT_ANCHOR = {
@@ -54,6 +91,14 @@ async function ready(page: Page) {
 	// measuring decorations before the plugin has been handed its threads.
 	await expect(page.locator(`[data-testid="review-editor"][data-ready="true"]`)).toHaveCount(
 		INSTANCE_COUNT
+	);
+	// The page publishes its plugin probe from an effect, so it exists a
+	// microtask after hydration rather than in the SSR markup. Gating here means
+	// every later `anchorState` call can read a plain value: a `null` from the
+	// probe then means "no view", which is a real failure, and never "the page
+	// had not got round to installing it yet".
+	await page.waitForFunction(
+		() => typeof (window as unknown as { __anchorState?: unknown }).__anchorState === 'function'
 	);
 }
 
@@ -204,8 +249,19 @@ test.describe('review-anchoring: repairing a mis-seeded anchor', () => {
 		// what changed is that it no longer cements the anchor.
 		await expect(page.locator('#anchor-offbyone h1')).toHaveAttribute('id', 'release-plan');
 
-		// Still correct after the debounce, and stable.
-		await page.waitForTimeout(SETTLE_MS);
+		// Settled, and settled the right way. Both anchors on this instance are
+		// mis-seeded, so the mount sync raises `needsReanchor`; the deferred pass
+		// lowers it again when it finishes. Polling for the flag to come back down
+		// waits for exactly that pass rather than for a duration, and the statuses
+		// alongside it are what stop the wait from being satisfied by a FAILED
+		// repair — an anchor the pass could not place also reports
+		// `needsReanchor: false`, and would show up here as `orphaned`.
+		await expect
+			.poll(() => anchorState(page, 'offbyone'))
+			.toEqual({
+				needsReanchor: false,
+				statuses: { 'offbyone-title': 'anchored', 'offbyone-dashboard': 'anchored' }
+			});
 		await expect(headingAnchor).toHaveText('Release Plan');
 
 		// Document and sidebar now agree. Previously the sidebar quoted the prop
@@ -282,11 +338,20 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 
 		// The plugin rewrote ITS copy of the quote to "Xdashboard". The bindable
 		// `threads` prop is not on that path: only the deferred re-anchoring pass
-		// publishes anchor updates, and it does not run here because the anchor
-		// still matches the plugin's own (rewritten) idea of itself. Wait out the
-		// debounce to prove the silence is permanent, not merely early.
-		await page.waitForTimeout(SETTLE_MS);
-		await expect(anchor).toHaveText('Xdashboard');
+		// publishes anchor updates, and it does not run here at all.
+		//
+		// "At all" is the assertion, and it is why this is a flag read rather than
+		// a wait. An insertion at the anchor's own edge overlaps its stored range,
+		// and the anchor verifiably described its own text beforehand, so the
+		// transaction takes the plugin's "follow the edit" branch — which rewrites
+		// quote/prefix/suffix in place and never raises `needsReanchor`. Nothing is
+		// scheduled, so there is no debounce to outlast; a sleep here was waiting
+		// for a timer that does not exist, and could not tell that apart from a
+		// timer that fires one millisecond after it gave up.
+		expect(await anchorState(page, 'drift')).toEqual({
+			needsReanchor: false,
+			statuses: { 'drift-dashboard': 'anchored' }
+		});
 		expect(await anchorJson(page, 'drift-json')).toEqual(SEEDED_DRIFT_ANCHOR);
 	});
 
@@ -296,8 +361,11 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 		await page.getByTestId('drift-insert-after').click();
 		await expect(anchor).toHaveText('dashboard!');
 
-		await page.waitForTimeout(SETTLE_MS);
-		await expect(anchor).toHaveText('dashboard!');
+		// Same branch, same silence, asserted the same way as the left edge above.
+		expect(await anchorState(page, 'drift')).toEqual({
+			needsReanchor: false,
+			statuses: { 'drift-dashboard': 'anchored' }
+		});
 		expect(await anchorJson(page, 'drift-json')).toEqual(SEEDED_DRIFT_ANCHOR);
 	});
 
@@ -351,9 +419,19 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 			'The text a comment was anchored to is no longer in the document. The comment is kept.'
 		);
 
-		// Outlast the debounce to prove the thread's survival is permanent rather
-		// than merely early, and that no deletion event ever arrives.
-		await page.waitForTimeout(SETTLE_MS);
+		// The thread's survival is permanent, and the proof is structural rather
+		// than temporal. The pass has demonstrably run — it is what published the
+		// `orphaned` status the poll above waited for — and it left the flag DOWN:
+		// the sync handler declines to re-raise `needsReanchor` for an anchor that
+		// is already orphaned, precisely so an idle document does not schedule the
+		// same failing pass forever. Only a later document change re-raises it, and
+		// this test makes none. So there is no pending work left that could still
+		// remove the thread, which is a stronger statement than "none had removed
+		// it yet after 900ms".
+		expect(await anchorState(page, 'drift')).toEqual({
+			needsReanchor: false,
+			statuses: { 'drift-dashboard': 'orphaned' }
+		});
 		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
 		await expect(page.getByTestId('event-log')).toBeEmpty();
 
@@ -428,17 +506,20 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 		// Orphaned rather than deleted, even mid-gap.
 		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
 
-		await page.waitForTimeout(LATE_PASTE_SETTLE_MS);
-
-		// The text is back, exactly where the successful burst put it.
-		await expect(page.locator('#anchor-drift p')).toHaveText(/^dashboard The first release/);
-		// …and so is the anchor. A decoration again, on the moved word.
-		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveCount(1);
-		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveText('dashboard');
-		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
-		// No deletion event ever fired: removing a thread is the consumer's call.
-		await expect(page.getByTestId('event-log')).toBeEmpty();
-
+		// This assertion IS the wait for the whole recovery, which is why it now
+		// comes first rather than last. It cannot pass early — nothing writes
+		// `from: 15` into the bindable prop until the second re-anchoring pass has
+		// found the restored quote and published it — and it cannot pass late,
+		// because the auto-retrying matcher keeps looking. The previous shape slept
+		// past the fixture's 450ms pause plus the debounce it restarts and then
+		// asserted; the ordering below removes the guess without removing anything
+		// the test claimed.
+		//
+		// (The 450ms itself is the FIXTURE's timer, in the page's
+		// `moveAnchoredWordSlowly`, and it is the behaviour under test — the whole
+		// point is that a human cut-and-paste lands outside the debounce. It is not
+		// a test sleep and must not be converted.)
+		//
 		// Recovery is total, not partial: `status` is back to 'anchored' and every
 		// positional field matches what the one-burst move produced. Byte for byte
 		// the same anchor, reached the slow way.
@@ -454,6 +535,23 @@ test.describe('review-anchoring: drift under ordinary editing', () => {
 				originalQuote: 'dashboard',
 				lastKnownOffset: 13
 			});
+		// …and the plugin agrees with the prop, with nothing further pending: a
+		// second retry still queued would mean the anchor above could yet move.
+		expect(await anchorState(page, 'drift')).toEqual({
+			needsReanchor: false,
+			statuses: { 'drift-dashboard': 'anchored' }
+		});
+
+		// Everything after here runs against that known-settled state.
+		//
+		// The text is back, exactly where the successful burst put it.
+		await expect(page.locator('#anchor-drift p')).toHaveText(/^dashboard The first release/);
+		// …and so is the anchor. A decoration again, on the moved word.
+		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveCount(1);
+		await expect(page.locator('#anchor-drift .comment-anchor')).toHaveText('dashboard');
+		await expect(page.getByTestId('drift-thread-count')).toHaveText('threads: 1');
+		// No deletion event ever fired: removing a thread is the consumer's call.
+		await expect(page.getByTestId('event-log')).toBeEmpty();
 
 		// The sidebar drops its orphan marking too — the thread is a normal,
 		// placed comment again.

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { gotoHydrated } from '../hydration';
+import { pressNextTabStop } from '../keyboard';
 import type { Locator, Page } from '@playwright/test';
 
 // How a review comment actually gets created, and what the host has to do with
@@ -20,28 +21,30 @@ const ROUTE = '/exercises/review-comment-creation';
 const CREATION_PARAGRAPH = 'Export actions land in the second release.';
 
 /**
- * Long enough for every timer that can still move the selection popover to have
- * run: ProseMirror re-writes its stored selection into the DOM ~20ms after the
- * editor regains focus, and the component debounces its own `selectionchange`
- * handling by another 20ms. Used only where the assertion is an ABSENCE, which is
- * the one shape an auto-retrying expect cannot wait out on its own.
- */
-const SELECTION_SETTLE_MS = 300;
-
-/**
  * Pause between the keystrokes that build a selection, so each one gets its own
  * debounce window.
  *
- * The component samples ProseMirror's selection exactly once per burst — 20ms
- * after the last `selectionchange`, and never again unless another one arrives.
- * Three keypresses fired back to back at CDP speed all land inside one window, so
- * the popover's whole existence rides on that single sample finding ProseMirror
- * already caught up; under a loaded machine it sometimes has not, and nothing
- * retries. Typing at something closer to human speed is not a workaround for a
- * flaky test — it is three independent chances instead of one, and if the
- * component ignores all three the assertions below still fail.
+ * INPUT PACING, NOT A WAIT — the distinction is the whole reason this constant
+ * survived a sweep that deleted every other fixed duration in this file. Nothing
+ * is being waited FOR here and no assertion follows the pause; it changes the
+ * SHAPE OF THE GESTURE, the way `delay` on `keyboard.type` does. A poll cannot
+ * replace it, because there is no condition to poll: what it buys is that the
+ * component gets three sampling opportunities instead of one, and polling harder
+ * cannot make the component sample more often.
+ *
+ * The mechanism: the component samples ProseMirror's selection exactly once per
+ * burst — 20ms after the last `selectionchange`, and never again unless another
+ * one arrives. Three keypresses fired back to back at CDP speed all land inside
+ * one window, so the popover's whole existence rides on that single sample
+ * finding ProseMirror already caught up; under a loaded machine it sometimes has
+ * not, and nothing retries. Typing at something closer to human speed is not a
+ * workaround for a flaky test — it is three independent chances instead of one,
+ * and if the component ignores all three the assertions below still fail.
+ *
+ * Named for the interval it is, so it stops reading as a settle threshold
+ * somebody guessed.
  */
-const KEY_SETTLE_MS = 60;
+const KEY_INTERVAL_MS = 60;
 
 async function ready(page: Page): Promise<void> {
 	await gotoHydrated(page, ROUTE);
@@ -79,7 +82,24 @@ async function dragSelect(
 	// scroll is still running when the click resolves, and a box measured then sends
 	// the drag across the wrong pixels — which shows up downstream as a selection
 	// that stops mid-word, or as no popover at all.
-	await page.waitForTimeout(KEY_SETTLE_MS);
+	//
+	// So wait for the thing the sentence actually describes. Two consecutive
+	// `boundingBox()` reads agreeing means the element did not move across a full
+	// polling interval, which is the literal definition of "the scroll settled" —
+	// where the 60ms this used to sleep was a guess at how long that takes, and one
+	// that a slower machine could outlast without anything noticing. There is
+	// nothing to be padded here: the condition is the measurement itself, and if
+	// the element never stops moving the poll times out rather than measuring
+	// something wrong.
+	let previousBox: string | null = null;
+	await expect
+		.poll(async () => {
+			const serialized = JSON.stringify(await target.boundingBox());
+			const settled = serialized !== 'null' && serialized === previousBox;
+			previousBox = serialized;
+			return settled;
+		})
+		.toBe(true);
 	const box = await target.boundingBox();
 	expect(box).not.toBeNull();
 	const y = box!.y + box!.height / 2;
@@ -123,7 +143,7 @@ async function keyboardSelectFirstWord(page: Page): Promise<void> {
 	expect(box).not.toBeNull();
 	await page.mouse.click(box!.x + 1, box!.y + box!.height / 2);
 	for (let keypress = 0; keypress < 3; keypress += 1) {
-		await page.waitForTimeout(KEY_SETTLE_MS);
+		await page.waitForTimeout(KEY_INTERVAL_MS);
 		await page.keyboard.press('Shift+ArrowRight');
 	}
 	// Proof the setup landed where it says it did, so a caret that drifted can
@@ -230,7 +250,8 @@ test.describe('review-comment-creation: the selection popover', () => {
 	});
 
 	test('a keyboard selection opens the same popover, and one Tab from the editor lands on its button', async ({
-		page
+		page,
+		browserName
 	}) => {
 		await ready(page);
 
@@ -243,16 +264,22 @@ test.describe('review-comment-creation: the selection popover', () => {
 		const popover = page.locator('#creation-editor-selection-popover');
 		await expect(popover).toBeVisible();
 
-		// One Tab, straight onto the action. Tab is bound in the editor's keymap
+		// One tab stop, straight onto the action. Tab is bound in the editor's keymap
 		// (sink list item), but that command returns false in a paragraph, so the
 		// keypress falls through to the browser's own focus movement — and the next
 		// tabbable thing in the document is the portaled popover.
-		await page.keyboard.press('Tab');
+		//
+		// `pressNextTabStop` rather than a literal Tab: macOS WebKit leaves buttons
+		// out of the plain-Tab cycle, so there the same intent is Option+Tab. The
+		// assertion below is unchanged, and it holds in all three engines once the
+		// keystroke says what it means on each. See `../keyboard`.
+		await pressNextTabStop(page, browserName);
 		await expect(popover.getByRole('button', { name: 'Add comment' })).toBeFocused();
 	});
 
 	test('Escape closes the popover from its button; from the composer, only the focus handoff is dependable', async ({
-		page
+		page,
+		browserName
 	}) => {
 		await ready(page);
 
@@ -282,7 +309,9 @@ test.describe('review-comment-creation: the selection popover', () => {
 		// and the editor gets back both its focus and its selection. Focus sitting on a
 		// BUTTON never disturbed the document selection in the first place — which is
 		// the detail the composer half of this test turns on.
-		await page.keyboard.press('Tab');
+		//
+		// Platform-accurate traversal, same reason as the sibling test above.
+		await pressNextTabStop(page, browserName);
 		await expect(popover.getByRole('button', { name: 'Add comment' })).toBeFocused();
 		await page.keyboard.press('Escape');
 		await expect
@@ -298,7 +327,10 @@ test.describe('review-comment-creation: the selection popover', () => {
 		// Extend the selection by a character and expand the popover over it. The
 		// expand is a click rather than Tab-then-Enter because the popover may be
 		// mid-remount from the race described below, and a click waits for it.
-		await page.waitForTimeout(KEY_SETTLE_MS);
+		// Same pacing as `keyboardSelectFirstWord`, for the same reason: this
+		// keypress has to arrive as its own `selectionchange` burst rather than
+		// coalescing into the traffic the Escape above just produced.
+		await page.waitForTimeout(KEY_INTERVAL_MS);
 		await page.keyboard.press('Shift+ArrowRight');
 		await expect(popover).toBeVisible();
 		await popover.getByRole('button', { name: 'Add comment' }).click();
@@ -310,7 +342,15 @@ test.describe('review-comment-creation: the selection popover', () => {
 		await page.keyboard.press('Escape');
 		await expect(editor).toBeFocused();
 		await expect(page.getByTestId('event-entry')).toHaveCount(0);
-		await page.waitForTimeout(SELECTION_SETTLE_MS);
+		// The 300ms that used to sit here was guarding against the composer coming
+		// BACK after the matchers below had already looked. It cannot: the expanded
+		// state has exactly one assignment of `true` in the whole component
+		// (`handleSelectionPopoverExpand`, review-editor-impl.svelte:1294), and it is
+		// wired to a single place — the selection popover's `onExpand` at :1884, i.e.
+		// a user clicking "Add comment". Every one of the twelve other assignments
+		// sets it false. No timer, no async path, and nothing this test does after
+		// this line can re-expand it, so the auto-retrying matchers are already
+		// waiting for the only transition that exists.
 		await expect(popover.getByRole('textbox', { name: 'Comment text' })).toHaveCount(0);
 		await expect(
 			page.locator('#creation-editor-selection-popover[data-cinder-expanded]')
@@ -419,7 +459,14 @@ test.describe('review-comment-creation: creation is notification-only', () => {
 		await expect(page.getByTestId('event-entry')).toHaveCount(1);
 		expect((await loggedPayload(page)).body).toBe('First thought.');
 		await expect(editor).toBeFocused();
-		await page.waitForTimeout(SELECTION_SETTLE_MS);
+		// Deleted for the same reason as its twin in the Escape test above: the
+		// composer's return would require `selectionPopoverExpanded` to go true
+		// again, which only a click on "Add comment" can do
+		// (review-editor-impl.svelte:1294, reached solely from `onExpand` at :1884).
+		// Note what this does NOT claim — the collapsed POPOVER genuinely may come
+		// back, which is the race the block below pins; the two assertions here are
+		// about the composer and the expanded attribute specifically, and those are
+		// settled.
 		await expect(popover.getByRole('textbox', { name: 'Comment text' })).toHaveCount(0);
 		await expect(
 			page.locator('#creation-editor-selection-popover[data-cinder-expanded]')

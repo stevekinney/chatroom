@@ -96,6 +96,34 @@ async function tabTo(page: Page, expected: Partial<ActiveDescriptor>): Promise<v
 }
 
 /**
+ * Tab forward until the editable ProseMirror surface has focus.
+ *
+ * For tests whose subject is what happens ONCE THE CARET IS IN THE EDITOR, where
+ * the stops on the way are scaffolding rather than the claim. Naming those stops
+ * made such tests engine-dependent for no benefit: WebKit omits buttons from the
+ * Tab order (see `../keyboard`), so a hard-coded six-press walk never arrived and
+ * the test failed for a reason unrelated to what it pins.
+ *
+ * The stop sequence itself is still pinned, in the two tab-order tests that exist
+ * to assert it. This helper deliberately does not.
+ *
+ * Bounded: a surface that never accepts focus fails with a named error rather
+ * than looping. The cap is a loop guard, not a timing guess — every press is
+ * followed by a settled read, so a slow engine takes longer rather than fewer
+ * stops.
+ */
+async function tabToEditableSurface(page: Page, browserName: string): Promise<void> {
+	for (let press = 0; press < 12; press += 1) {
+		const active = await activeDescriptor(page);
+		if (active.role === 'textbox' && active.label === 'Markdown editor') return;
+		await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
+	}
+	throw new Error(
+		'Tabbed 12 times without reaching the editable surface (role=textbox, label="Markdown editor")'
+	);
+}
+
+/**
  * Press Tab and poll until focus has actually moved off `from`, then report
  * where it landed. Used where the walk collects stops rather than asserting a
  * known sequence: reading `document.activeElement` immediately after a keypress
@@ -656,7 +684,19 @@ test.describe('review-ssr-and-a11y: live regions', () => {
 });
 
 test.describe('review-ssr-and-a11y: keyboard reachability', () => {
-	test('the Tab order through the composed surface is short and predictable', async ({ page }) => {
+	test('the Tab order through the composed surface is short and predictable', async ({
+		page,
+		browserName
+	}) => {
+		test.skip(
+			browserName === 'webkit',
+			"WebKit's macOS port leaves <button> and <a> out of the sequential focus order unless " +
+				'Full Keyboard Access is on, and adds <body> as a stop under Option+Tab — so the ORDER ' +
+				'this test names cannot exist there. Measured component-free on a static page: see ' +
+				'`../keyboard`. Sibling tests that assert only WHERE one Tab lands are not skipped; ' +
+				'they translate the keystroke instead, because that keeps the assertion intact.'
+		);
+
 		await ready(page);
 
 		// The walk starts from a button OUTSIDE the component so the first Tab is
@@ -716,7 +756,26 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		// and it behaves like one: a single roving stop, which is why four stops
 		// and not seven come out of a bar holding this many buttons.
 		await expect(page.locator(`#${EDITOR_ID}-toolbar`)).toHaveAttribute('role', 'toolbar');
+	});
 
+	test('…and that group is four tab stops, with two more in the editor', async ({
+		page,
+		browserName
+	}) => {
+		// SPLIT from the role assertions above, deliberately, rather than skipping
+		// them together in WebKit. The roles are engine-independent and they are the
+		// half that catches a revert to `role="toolbar"` — the very regression the
+		// original pin was too weak to see. Losing that in an engine to protect the
+		// count would repeat the mistake this test was rewritten to fix.
+		test.skip(
+			browserName === 'webkit',
+			"WebKit's macOS port leaves <button> out of the sequential focus order unless Full " +
+				'Keyboard Access is on, so a six-press walk cannot collect these stops there. ' +
+				'Measured component-free on a static page: see `../keyboard`. The role assertions ' +
+				'this test was split from still run in WebKit.'
+		);
+
+		await ready(page);
 		await page.getByTestId('tab-order-start').focus();
 
 		const stops: ActiveDescriptor[] = [];
@@ -734,7 +793,8 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 	});
 
 	test('Tab is swallowed inside a list and silently indents it, but escapes from prose (pinned known bug)', async ({
-		page
+		page,
+		browserName
 	}) => {
 		await ready(page);
 
@@ -747,13 +807,16 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		// sometimes still evaluated against the selection the editor mounted with.
 		// Measured over repeat runs, click-then-Tab lands on either of the two
 		// outcomes below, for reasons that have nothing to do with either.
+		// Tab UNTIL the editable surface, rather than naming the six stops on the
+		// way. The intermediate stops are pinned by the two tab-order tests above
+		// (which is where an engine that orders them differently belongs); here
+		// they are only scaffolding, and hard-coding them made this test fail in
+		// WebKit for a reason that has nothing to do with the keyboard trap it
+		// exists to pin — WebKit omits buttons from the Tab order, so the walk
+		// never arrived. Bounded so a surface that never takes focus fails loudly
+		// instead of looping.
 		await page.getByTestId('tab-order-start').focus();
-		await tabTo(page, { role: 'tab', text: 'Editor' });
-		await tabTo(page, { tag: 'BUTTON', label: 'Block type: Paragraph', inControls: true });
-		await tabTo(page, { tag: 'BUTTON', label: 'Open comments sidebar (1 comment)' });
-		await tabTo(page, { tag: 'BUTTON', label: 'Copy to clipboard' });
-		await tabTo(page, { id: EDITOR_ID, role: 'application' });
-		await tabTo(page, { role: 'textbox', label: 'Markdown editor' });
+		await tabToEditableSurface(page, browserName);
 
 		// Tabbing in puts the caret at the END of the document, not at its start —
 		// which in this fixture is the last bullet of the checklist. Everything
@@ -815,13 +878,17 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		await expect.poll(() => blockTypeLabel(page)).toBe('Block type: Heading 2');
 
 		const markdownBefore = await currentMarkdown(page).getAttribute('value');
-		// The surface is the last focusable element in the document, so a forward
-		// Tab out of it runs off the end of the page: `activeElement` falls back
-		// to `<body>`, and one more Tab wraps around to the button that starts the
-		// walk. That second stop is the proof focus really left the component
-		// rather than landing somewhere unnamed inside it.
-		await tabTo(page, { tag: 'BODY', inEditorMain: false });
-		await tabTo(page, { tag: 'BUTTON', text: 'Start of tab order' });
+		// Focus leaves the component and lands on the sentinel that follows it in
+		// the document. This used to assert `<body>` and then a wrap-around to the
+		// START sentinel, which is what Chromium does when a forward Tab runs off
+		// the end of the page — Firefox hands focus to the browser chrome instead
+		// and the test could no longer see it. Naming the element focus arrived at
+		// is both engine-independent and strictly stronger than asserting it
+		// reached nothing in particular.
+		await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
+		await expect
+			.poll(() => activeDescriptor(page))
+			.toMatchObject({ tag: 'BUTTON', text: 'End of tab order', inEditorMain: false });
 		// Nothing was edited on the way out — unlike the swallowed presses above.
 		expect(await currentMarkdown(page).getAttribute('value')).toBe(markdownBefore);
 	});
@@ -902,7 +969,20 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 });
 
 test.describe('review-ssr-and-a11y: the thread popover', () => {
-	test('opening traps focus, and Tab cycles the three controls inside it', async ({ page }) => {
+	test('opening traps focus, and Tab cycles the three controls inside it', async ({
+		page,
+		browserName
+	}) => {
+		test.skip(
+			browserName === 'webkit',
+			"WebKit's macOS port omits <button> from sequential focus navigation unless Full " +
+				"Keyboard Access is on, so native Tab skips the popover's Close button and the cycle " +
+				'this test names cannot be walked there. Measured component-free on a static page: ' +
+				'see `../keyboard`. The trap itself is fine in WebKit — the initial focus lands on ' +
+				'Delete thread exactly as asserted below, and Option+Tab cycles all three controls ' +
+				'in DOM order. What is unavailable is the NATIVE Tab cycle, which is the claim.'
+		);
+
 		await ready(page);
 		await openThreadPopover(page);
 
@@ -968,15 +1048,31 @@ test.describe('review-ssr-and-a11y: the thread popover', () => {
 		page
 	}) => {
 		await ready(page);
-		await openThreadPopover(page);
+		await openSidebar(page);
+
+		// Opened by KEYBOARD rather than through the shared click helper, and that
+		// is the whole point of the test rather than a detail. Restoration works by
+		// snapshotting `document.activeElement` at activation — so it can only
+		// restore to the sidebar item if that item had focus when the popover
+		// opened. A click gives it focus in Chromium and Firefox but NOT in WebKit,
+		// which does not focus a button on mousedown, so the click path was
+		// quietly testing a precondition that only two engines provide.
+		//
+		// Focusing and pressing Enter is both the engine-independent path and the
+		// one a keyboard user actually takes — which is the user this test is about.
+		await page.locator('button.thread-item').focus();
+		await expect
+			.poll(() => activeDescriptor(page))
+			.toMatchObject({ tag: 'BUTTON', className: expect.stringContaining('thread-item') });
+		await page.keyboard.press('Enter');
+
+		await expect(page.locator('.thread-popover')).toBeVisible();
 		await expect.poll(() => activeDescriptor(page)).toMatchObject({ label: 'Delete thread' });
 
 		await page.keyboard.press('Escape');
 		await expect(page.locator('.thread-popover')).toHaveCount(0);
 
-		// Focus restoration works because the trap snapshots `document.activeElement`
-		// at activation — the sidebar button had focus from the click that opened
-		// the popover — and returns to it on deactivation.
+		// Back to the item that opened it.
 		await expect
 			.poll(() => activeDescriptor(page))
 			.toMatchObject({ tag: 'BUTTON', className: expect.stringContaining('thread-item') });

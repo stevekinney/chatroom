@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ReviewEditor, type Thread } from '@lostgradient/editor/review-editor';
 	import { findAllOccurrences, reanchorQuote } from '@lostgradient/editor/comments';
+	import { anchorPluginKey } from '@lostgradient/editor/anchor-decorations';
 
 	// ANCHORING AND RE-ANCHORING
 	//
@@ -193,6 +194,7 @@ Gamma widget delta.`;
 			comments: comment('offbyone-dashboard', 'Anchored one position right, in a paragraph.')
 		}
 	]);
+	let offByOneEditor: ReviewEditor | undefined = $state();
 
 	// =====================================================================
 	// Instance 3 — the same anchor assigned AFTER mount
@@ -306,6 +308,58 @@ Gamma widget delta.`;
 		return () => observer.disconnect();
 	});
 
+	// The one variable that decides whether the deferred re-anchoring pass runs
+	// at all, read straight off the live plugin.
+	//
+	// `view.update` returns before it touches `setTimeout` unless the plugin's
+	// `needsReanchor` is true, so `needsReanchor === false` says something no
+	// amount of waiting can: not "the pass has finished", but "no pass was ever
+	// scheduled". That is the difference between a test that outlasts a debounce
+	// and a test that pins the debounce never started — the second one fails the
+	// instant a regression begins scheduling work, instead of failing only once
+	// the regression also happens to be slower than the sleep.
+	//
+	// Nothing upstream had to change to expose it: `anchorPluginKey` is a public
+	// export on the `@lostgradient/editor/anchor-decorations` subpath, ReviewEditor
+	// hands out its live `EditorView` through `getView()`, and the read is
+	// pure — no meta is dispatched, no transaction applied. The key is a module
+	// singleton shared by every instance, but `getState` is scoped to the view's
+	// own `EditorState`, so each name below reports only its own instance.
+	//
+	// Only the two instances the spec probes are wired up; `ambiguousEditor` has a
+	// `bind:this` for its move button rather than for this, and adding it here
+	// would be a one-line change if a test ever needs it.
+	type AnchorProbe = { needsReanchor: boolean; statuses: Record<string, string> };
+
+	function anchorProbe(name: string): AnchorProbe | null {
+		const editor =
+			name === 'drift' ? driftEditor : name === 'offbyone' ? offByOneEditor : undefined;
+		const view = editor?.getView();
+		if (!view) return null;
+		const state = anchorPluginKey.getState(view.state);
+		if (!state) return null;
+		return {
+			needsReanchor: state.needsReanchor,
+			// Per-anchor status alongside the flag, because "no pass is pending"
+			// and "the anchor is placed" are separate claims and a test that
+			// wants both should not have to infer one from the other.
+			statuses: Object.fromEntries([...state.anchors].map(([id, anchor]) => [id, anchor.status]))
+		};
+	}
+
+	// Published from an effect, which puts it in the browser only and takes it
+	// away again on teardown. The teardown is the point: a probe left behind
+	// after the page unmounts would keep answering `null` — indistinguishable
+	// from "the view is not ready yet", and quiet enough that a test could read
+	// it forever without noticing. Removed, the same call is a TypeError, which
+	// is the loud answer.
+	$effect(() => {
+		(window as unknown as { __anchorState?: typeof anchorProbe }).__anchorState = anchorProbe;
+		return () => {
+			delete (window as unknown as { __anchorState?: typeof anchorProbe }).__anchorState;
+		};
+	});
+
 	// =====================================================================
 	// Driving the editor by transaction
 	// =====================================================================
@@ -346,8 +400,13 @@ Gamma widget delta.`;
 	const insertAfterAnchor = () => insertAt(driftEditor, '!', 53);
 
 	// Delete the anchored word and leave it deleted. 300ms later the deferred
-	// pass runs, `reanchorQuote` finds no occurrence of "dashboard" anywhere,
-	// and the component removes the thread from the bindable array.
+	// pass runs and `reanchorQuote` finds no occurrence of "dashboard" anywhere,
+	// so the anchor is marked `orphaned` — and the thread STAYS in the bindable
+	// array. It used to be removed outright, which is what cinder#1284 reversed:
+	// at the moment text disappears a deletion and the first half of a
+	// cut-and-paste are indistinguishable, and 300ms is faster than any human
+	// paste. Removing a thread is the consumer's decision now, so
+	// `onthreaddelete` does not fire here at all.
 	const deleteAnchoredWord = () => deleteRange(driftEditor, 44, 53);
 
 	// Delete and reinsert in ONE synchronous burst, well inside the 300ms
@@ -487,6 +546,7 @@ Export actions ship first; the dashboard follows in a later release.`;
 		<div data-testid="instance-offbyone" style="min-height: 30rem;">
 			<ReviewEditor
 				id="anchor-offbyone"
+				bind:this={offByOneEditor}
 				original={releasePlan}
 				bind:value={offByOneValue}
 				bind:threads={offByOneThreads}

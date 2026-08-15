@@ -305,11 +305,19 @@
 
 <div style="height: 100dvh; display: flex; flex-direction: column;">
 	<a href={resolve('/exercises')} style="padding: 0.5rem 1rem;">Exercises</a>
-	{#if error}
-		<p role="alert" style="padding: 0.5rem 1rem; margin: 0; color: var(--cinder-danger);">
-			{error}
-		</p>
-	{/if}
+	<!-- Always rendered, never `{#if}`-gated. A live region has to exist in the
+	     DOM before the content arrives: mounting one that already has text is not
+	     reliably announced, which is the pattern Chat's own
+	     `chat-status-announcer.svelte` documents and follows. Padding is applied
+	     only when populated so an empty region takes no layout. -->
+	<p
+		role="alert"
+		data-testid="demo-error"
+		style="margin: 0; color: var(--cinder-danger);"
+		style:padding={error ? '0.5rem 1rem' : '0'}
+	>
+		{error ?? ''}
+	</p>
 	<div style="flex: 1; min-height: 0;">
 		<Chat
 			bind:this={chat}

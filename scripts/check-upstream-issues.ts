@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 /**
  * Finds `upstream: <owner>/<repo>#<issue>` markers left next to workarounds in
- * tracked source files, checks each referenced issue's state via `gh`, and
- * flags any that have closed — those workarounds are candidates to remove.
+ * tracked AND untracked-but-not-ignored source files (`git grep --untracked`
+ * respects .gitignore, so node_modules etc. stay out), checks each referenced
+ * issue's state via `gh`, and flags any that have closed — those workarounds
+ * are candidates to remove.
  *
  * Markers live in code comments (JSON files can't carry them, so dependency
  * entries aren't tagged — only the code that works around them).
@@ -18,9 +20,9 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
-const grep = await $`git grep -nP ${MARKER_PATTERN.source}`.nothrow().quiet();
+const grep = await $`git grep -nP --untracked ${MARKER_PATTERN.source}`.nothrow().quiet();
 if (grep.exitCode !== 0 && grep.stdout.toString().trim() === '') {
-	console.log('No upstream markers found in tracked files.');
+	console.log('No upstream markers found in tracked or untracked files.');
 	process.exit(0);
 }
 
@@ -34,7 +36,7 @@ for (const line of grep.stdout.toString().split('\n')) {
 }
 
 if (references.length === 0) {
-	console.log('No upstream markers found in tracked files.');
+	console.log('No upstream markers found in tracked or untracked files.');
 	process.exit(0);
 }
 

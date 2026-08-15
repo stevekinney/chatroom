@@ -222,6 +222,15 @@ The first release includes a dashboard, export actions, and inline review.
 	const normalizedFormattingOnly = generateUnifiedDiff(formattingOnlyState);
 	const rawFormattingOnly = generateUnifiedDiff(formattingOnlyState, { normalizeInputs: false });
 
+	// The SAME state through `generateMarkdownSummary`, which is where the two
+	// exports stop agreeing. `generateUnifiedDiff` normalizes both sides;
+	// `generateMarkdownSummary` runs `computeLineDiff` on the RAW strings and has
+	// no normalization step and no option to add one. So one export says the
+	// document is unchanged while the other reports an edit — from a single
+	// `ReviewState`. Rendered here because it is what makes any byte-exact
+	// summary expectation fragile in a way the diff's is not.
+	const formattingOnlySummary = generateMarkdownSummary(formattingOnlyState);
+
 	// ── generateCommentsExport location fallbacks ───────────────────────────
 	//
 	// The `### …` line falls through three formats depending on which anchor
@@ -326,6 +335,156 @@ Just one paragraph.`);
 	let unnamedValue = $state(`# Unnamed
 
 This editor omits the \`name\` prop entirely.`);
+
+	// ── Fourth instance: orphaned, anchored, and document-level threads ─────
+	//
+	// `exportMarkdownSummary` prints one `###` heading per thread and chooses
+	// between three shapes: `On "<quote>" (no longer in the document)` when the
+	// anchor is orphaned, `On "<quote>"` when it is anchored, and
+	// `Document-level feedback` when there is no quote at all. Exercising the
+	// orphan branch needs a thread whose anchor status is `orphaned`, and the
+	// only honest way to get one is the way a reviewer does: delete the text the
+	// comment was anchored to.
+	//
+	// `original` deliberately EQUALS the initial `value`. Two things fall out of
+	// that, both wanted. At rest the summary has no `## Changes Made` section at
+	// all, so the whole document reduces to the Feedback section the RE-2
+	// criterion is about — and it contains no digit anywhere, which is a much
+	// stronger statement of "prints no coordinate it does not have" than checking
+	// for the absence of specific words. And the `orphan-diff` hidden input is
+	// the EMPTY STRING, which is `generateUnifiedDiff`'s answer for two identical
+	// documents and the input `git apply` refuses outright.
+	const ORPHAN_DOCUMENT = `# Beta Notes
+
+The beta rollout ships to ten teams.
+
+Everything else is unchanged.`;
+
+	let orphanValue = $state(ORPHAN_DOCUMENT);
+
+	// PROSEMIRROR POSITIONS again, and the arithmetic is worth showing because
+	// the delete button below depends on it. The heading node spans 0..12
+	// ("Beta Notes" is 10 characters at 1..11); the first paragraph's content
+	// starts at 13, so "The " puts "beta rollout" at 17..29. `lastKnownOffset` is
+	// the `textBetween(…, '\n')` offset for the same span — 10 for the heading,
+	// one separator, four for "The " — which is 15, a different number for the
+	// same word.
+	let orphanThreads = $state<Thread[]>([
+		{
+			id: 'thread-rollout',
+			createdAt: '2026-08-11T12:00:00.000Z',
+			anchor: {
+				type: 'text',
+				from: 17,
+				to: 29,
+				quote: 'beta rollout',
+				prefix: 'The ',
+				suffix: ' ships to ten teams.',
+				status: 'anchored',
+				originalQuote: 'beta rollout',
+				lastKnownOffset: 15
+			},
+			comments: [
+				{
+					id: 'comment-rollout',
+					threadId: 'thread-rollout',
+					authorId: 'maya',
+					body: 'Which teams, exactly?',
+					createdAt: '2026-08-11T12:00:00.000Z'
+				}
+			]
+		},
+		{
+			// The control group: this quote survives the deletion below, so its
+			// heading must stay in the un-parenthesized form throughout.
+			id: 'thread-heading',
+			createdAt: '2026-08-11T12:01:00.000Z',
+			anchor: {
+				type: 'text',
+				from: 1,
+				to: 11,
+				quote: 'Beta Notes',
+				prefix: '# ',
+				suffix: '\n\nThe beta rollout',
+				status: 'anchored',
+				originalQuote: 'Beta Notes',
+				lastKnownOffset: 0
+			},
+			comments: [
+				{
+					id: 'comment-heading',
+					threadId: 'thread-heading',
+					authorId: 'steve',
+					body: 'Heading reads fine.',
+					createdAt: '2026-08-11T12:01:00.000Z'
+				}
+			]
+		},
+		{
+			// No quote at all. The summary has a third heading shape for this and
+			// it is the one that could most easily be mistaken for an orphan.
+			id: 'thread-whole-document',
+			createdAt: '2026-08-11T12:02:00.000Z',
+			anchor: {
+				type: 'document',
+				from: 0,
+				to: 0,
+				quote: '',
+				prefix: '',
+				suffix: '',
+				status: 'anchored'
+			},
+			comments: [
+				{
+					id: 'comment-whole-document',
+					threadId: 'thread-whole-document',
+					authorId: 'maya',
+					body: 'Overall: ready to ship.',
+					createdAt: '2026-08-11T12:02:00.000Z'
+				}
+			]
+		}
+	]);
+
+	let orphanEditor = $state<ReturnType<typeof ReviewEditor> | undefined>(undefined);
+
+	// A precise ProseMirror transaction rather than a keyboard-driven selection,
+	// borrowed from `review-anchoring`: the point of this button is to remove
+	// EXACTLY the anchored quote, and a click-and-drag selection cannot promise
+	// that. `getView()` is part of the imperative surface `bind:this` exposes.
+	function deleteAnchoredPhrase() {
+		const view = orphanEditor?.getView();
+		if (!view) return;
+		view.dispatch(view.state.tr.delete(17, 29));
+	}
+
+	// `anchor.status` is what the summary branches on, so the statuses are
+	// rendered as their own line: a spec can poll THIS rather than sleep through
+	// the ~300ms re-anchoring debounce.
+	//
+	// Sorted by id rather than left in array order. The claim being made is about
+	// which thread orphans, not about where the component keeps it, and a
+	// re-anchoring pass that reordered the array would otherwise redden a test
+	// that has no opinion about ordering.
+	const orphanStatuses = $derived(
+		orphanThreads
+			.map((thread) => `${thread.id}:${thread.anchor.status}`)
+			.sort()
+			.join(',')
+	);
+
+	// Built from the live props, so it keeps agreeing with the component after
+	// the deletion rather than only at rest.
+	const orphanState = $derived<ReviewState>({
+		schemaVersion: 4,
+		content: orphanValue,
+		original: ORPHAN_DOCUMENT,
+		threads: orphanThreads,
+		frontMatter: null,
+		frontMatterRaw: null,
+		updatedAt: '2026-08-11T12:00:00.000Z'
+	});
+	const orphanModuleSummary = $derived(generateMarkdownSummary(orphanState));
 
 	const paneStyle = 'min-height: 30rem;';
 	const outputStyle =
@@ -515,6 +674,16 @@ This editor omits the \`name\` prop entirely.`);
 			data-testid="raw-diff"
 			style={outputStyle}
 			value={rawFormattingOnly.diff}></textarea>
+		<p data-testid="formatting-only-summary-stats" style="margin: 0;">
+			changeCount:{formattingOnlySummary.stats.changeCount} threadCount:{formattingOnlySummary.stats
+				.threadCount}
+		</p>
+		<textarea
+			readonly
+			aria-label="formatting-only markdown summary"
+			data-testid="formatting-only-summary"
+			style={outputStyle}
+			value={formattingOnlySummary.markdown}></textarea>
 	</section>
 
 	<section style="display: grid; gap: 0.75rem;">
@@ -624,5 +793,47 @@ This editor omits the \`name\` prop entirely.`);
 			data-testid="bare-submitted-diff"
 			style={outputStyle}
 			value={bareSubmit.values['bare-diff'] ?? ''}></textarea>
+	</section>
+
+	<section style="display: grid; gap: 0.75rem;">
+		<h2 style="margin: 0;">
+			Orphaned, anchored, and document-level threads — <code>name="orphan"</code>
+		</h2>
+		<p style="margin: 0;">
+			No wrapping form: the five hidden inputs render wherever <code>name</code> is set, and reading one
+			directly is the same string a submit would carry.
+		</p>
+		<button type="button" data-testid="orphan-delete" onclick={deleteAnchoredPhrase}>
+			Delete the anchored phrase
+		</button>
+		<div data-testid="orphan-editor" style={paneStyle}>
+			<ReviewEditor
+				bind:this={orphanEditor}
+				id="exports-orphan"
+				original={ORPHAN_DOCUMENT}
+				bind:value={orphanValue}
+				bind:threads={orphanThreads}
+				currentUserId="steve"
+				name="orphan"
+			/>
+		</div>
+		<p data-testid="orphan-thread-statuses" style="margin: 0;">{orphanStatuses}</p>
+		<p data-testid="orphan-thread-count" style="margin: 0;">threads: {orphanThreads.length}</p>
+		<p data-testid="orphan-module-stats" style="margin: 0;">
+			changeCount:{orphanModuleSummary.stats.changeCount} threadCount:{orphanModuleSummary.stats
+				.threadCount}
+		</p>
+		<textarea
+			readonly
+			aria-label="orphan fixture live value"
+			data-testid="orphan-live-value"
+			style={outputStyle}
+			value={orphanValue}></textarea>
+		<textarea
+			readonly
+			aria-label="orphan fixture module summary"
+			data-testid="orphan-module-summary"
+			style={outputStyle}
+			value={orphanModuleSummary.markdown}></textarea>
 	</section>
 </div>

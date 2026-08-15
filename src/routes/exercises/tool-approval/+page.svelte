@@ -226,11 +226,14 @@
 		<button type="button" data-testid="toggle-fail-approve" onclick={toggleFailApprove}>
 			{failApprove ? 'Disable' : 'Enable'} approveToolCall failure
 		</button>
-		{#if errorFail}
-			<p role="alert" data-testid="fail-error" style="margin: 0; color: var(--cinder-danger);">
-				{errorFail}
-			</p>
-		{/if}
+		<!-- Always rendered, never `{#if}`-gated. A live region has to exist in the
+		     DOM before the content arrives: mounting one that already has text is not
+		     reliably announced, which is the pattern Chat's own
+		     `chat-status-announcer.svelte` documents and follows. Padding is applied
+		     only when populated so an empty region takes no layout. -->
+		<p role="alert" data-testid="fail-error" style="margin: 0; color: var(--cinder-danger);">
+			{errorFail ?? ''}
+		</p>
 		<div style="height: 24rem;">
 			<Chat
 				id="tool-approval-fail-chat"

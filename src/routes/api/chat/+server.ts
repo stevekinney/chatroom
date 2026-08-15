@@ -129,6 +129,33 @@ export const POST: RequestHandler = async ({ request }) => {
 				settled = true;
 				controller.error(error);
 			});
+			// A user pressing "stop generating" CRASHED THE SERVER without this, and
+			// the mechanism is deliberate on the SDK's side rather than incidental.
+			// `MessageStream._emit` does this when it emits `abort`:
+			//
+			//   if (!catchingPromiseCreated && !listeners?.length) Promise.reject(error);
+			//
+			// — an intentional unhandled rejection to make a silently-dropped stream
+			// loud. We register `on('error')` but registered no `abort` listener, and
+			// `catchingPromiseCreated` is only set by awaiting `done()`/`finalMessage()`,
+			// which this route never does because it forwards events as they arrive.
+			// So the client aborting reached `cancel()` → `anthropicStream.abort()` →
+			// `_emit('abort')` → `Promise.reject` with nothing attached, and Node took
+			// the process down mid-request.
+			//
+			// Registering the listener is the whole fix: its presence satisfies
+			// `!listeners?.length` and the SDK stops synthesising the rejection.
+			//
+			// The body is a no-op on purpose. An abort here is not a failure — it is
+			// the documented outcome of `cancel()`, which already set `settled`, and
+			// the partial text the client kept is the behaviour `+page.svelte` intends.
+			// Calling `controller.error` would turn a normal stop into an error the
+			// user never caused. This is the same one-shot hazard the `settled`
+			// comment above describes, in its second form: there, a double controller
+			// call; here, an event with no listener.
+			anthropicStream.on('abort', () => {
+				settled = true;
+			});
 		},
 		cancel() {
 			settled = true;
