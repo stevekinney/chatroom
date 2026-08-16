@@ -52,12 +52,13 @@ const EXPECTED_DIFF = [
 // orphan branch — or to any of the three heading shapes — cannot quietly alter
 // what an anchored thread produces.
 //
-// Two things make this literal safe HERE and unsafe almost anywhere else. The
-// fixture is never typed into on the shared page (the one test that types has
-// its own), and `generateMarkdownSummary` does NOT normalize: it runs
-// `computeLineDiff` on the raw strings, so the `- ` bullets below are the
-// fixture's own and would become `* ` the instant anyone pressed a key in this
-// editor. The unified diff has no such fragility, because it normalizes.
+// The fixture is never typed into on the shared page (the one test that types
+// has its own). `generateMarkdownSummary` now normalizes by default too
+// (`@lostgradient/editor@0.11.0`, cinder#1307/#1318), through the same
+// `normalizeDocument` `generateUnifiedDiff` uses — which is what keeps the
+// `- ` bullets below stable even though Milkdown's own serializer prefers `*`:
+// normalization canonicalizes back to `-` for this fixture (see "typing
+// changes `review-current` and `review-diff`" below), so both exports agree.
 const EXPECTED_SUMMARY = [
 	'## Changes Made',
 	'',
@@ -776,26 +777,25 @@ test.describe('the pure export functions', () => {
 		expect(raw).toContain('@@ -1,1 +1,1 @@');
 	});
 
-	test('the summary does NOT normalize, so one state yields an empty diff and a summary full of changes', async () => {
-		// Same `ReviewState`, two exports, two answers. `generateUnifiedDiff` runs
-		// both sides through the markdown pipeline before comparing;
-		// `generateMarkdownSummary` calls `computeLineDiff` on the raw strings and
-		// has no normalization step and no option to add one. So the diff says
-		// "nothing changed" while the summary reports a modified line — for a
-		// document whose only difference is which bullet character it uses.
+	test('the summary now normalizes too, so the same state yields an empty diff and an empty-changes summary', async () => {
+		// Same `ReviewState`, two exports, now the same answer. `generateUnifiedDiff`
+		// runs both sides through the markdown pipeline before comparing;
+		// `generateMarkdownSummary` used to call `computeLineDiff` on the raw
+		// strings with no normalization step and no option to add one, so the diff
+		// said "nothing changed" while the summary reported a modified line — for a
+		// document whose only difference was which bullet character it used.
 		//
-		// Pinned rather than avoided. It is the reason a byte-exact summary
-		// expectation is only safe on a fixture nothing types into: one keystroke
-		// re-serializes the whole document through Milkdown, which prefers `*`
-		// bullets, and the summary would report every list item as changed while
-		// the diff stayed silent.
+		// Fixed in `@lostgradient/editor@0.11.0`: `generateMarkdownSummary` gained
+		// its own `normalizeInputs` option, defaulting to `true`, routed through the
+		// same shared `normalizeDocument` as `generateUnifiedDiff` (cinder#1307,
+		// cinder#1318). Both exports now agree that a `-`-vs-`*` bullet is not a
+		// change.
 		await expect(page.getByTestId('normalized-diff')).toHaveValue('');
 		const summary = await valueOf(page.getByTestId('formatting-only-summary'));
-		expect(summary).toContain('## Changes Made');
-		expect(summary).toContain('-- item one');
-		expect(summary).toContain('+* item one');
+		expect(summary).toBe('No changes or feedback to report.');
+		expect(summary).not.toContain('## Changes Made');
 		await expect(page.getByTestId('formatting-only-summary-stats')).toHaveText(
-			'changeCount:1 threadCount:0'
+			'changeCount:0 threadCount:0'
 		);
 		// And no Feedback section, because the state carries no threads — the two
 		// sections are independent.

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ReviewEditor, type Thread } from '@lostgradient/editor/review-editor';
-	import { generateUnifiedDiff } from '@lostgradient/editor/export';
+	import { generateMarkdownSummary, generateUnifiedDiff } from '@lostgradient/editor/export';
 
 	// YAML front matter is the one document feature that changes what every
 	// OTHER review-editor surface means. `parseFrontMatter` splits the document
@@ -49,10 +49,16 @@
 	let fullChanges = $state<string[]>([]);
 
 	// ── Malformed YAML ──────────────────────────────────────────────────────
-	// `[unclosed` opens a flow sequence that never closes. `parseFrontMatter`
-	// still reports `hasFrontMatter: true` (the delimiters are well formed) but
-	// `data` comes back null, which is what drops the component into the raw
-	// YAML editor. It also `console.warn`s "Failed to parse front matter:".
+	// `[unclosed` opens a flow sequence that never closes — a genuine YAML
+	// syntax error. Before cinder#1325/#1330, `parseFrontMatter` still reported
+	// `hasFrontMatter: true` (the delimiters are well formed) with `data: null`,
+	// which is what used to drop the component into a raw YAML fallback editor
+	// (and `console.warn` "Failed to parse front matter:"). #1330 folded a
+	// genuine parse failure into the same `hasFrontMatter: false` branch as an
+	// unrecognized delimiter, so this document is no longer treated as front
+	// matter at all: the whole thing, `---` lines included, is now ordinary
+	// body content, and neither the raw editor nor the console warning appear
+	// anymore. See `review-front-matter.e2e.ts`'s "malformed YAML" test.
 	const BAD_DOCUMENT = [
 		'---',
 		'title: [unclosed',
@@ -234,6 +240,43 @@
 
 	let diffValue = $state(DIFF_CURRENT);
 
+	// ── Blank-line normalization agreement (ROADMAP X-2, fixed) ──────────────
+	// The pair above shows generateUnifiedDiff and generateMarkdownSummary
+	// AGREEING: same front matter, same body, one YAML value changed, both
+	// functions report the same edit. This pair used to make them DISAGREE.
+	// Front matter and body text are byte-identical between original and
+	// current; the ONLY difference is how many blank lines separate the
+	// closing `---` from the body (one vs. three).
+	//
+	// generateUnifiedDiff's normalizeDocument (normalizeInputs defaults to
+	// true) re-attaches front matter to the body with a single hardcoded `\n`
+	// separator and runs the body through the markdown pipeline's normalize(),
+	// which strips every leading blank line before re-serializing — so ANY
+	// number of blank lines there (1, 3, 12) collapses to the identical
+	// normalized document. generateMarkdownSummary's computeLineDiff used to
+	// run on the RAW strings with no normalization step at all, so it saw the
+	// extra blank lines as real content — one function reported zero changes,
+	// the other reported an edit. Fixed in `@lostgradient/editor@0.11.0`:
+	// generateMarkdownSummary gained its own normalizeInputs option, defaulting
+	// to true, routed through the same shared normalizeDocument as
+	// generateUnifiedDiff, so both functions now collapse this fixture's
+	// blank-line difference the same way and agree that nothing changed. Fixed
+	// and verified in https://github.com/stevekinney/cinder/issues/1318.
+	const BLANK_LINE_FRONT_MATTER = ['---', 'title: Release Plan', 'draft: true', '---'].join('\n');
+	const BLANK_LINE_ORIGINAL = `${BLANK_LINE_FRONT_MATTER}\n\nAlpha line.`;
+	const BLANK_LINE_CURRENT = `${BLANK_LINE_FRONT_MATTER}\n\n\n\nAlpha line.`;
+
+	const blankLineState = {
+		schemaVersion: 4 as const,
+		content: BLANK_LINE_CURRENT,
+		original: BLANK_LINE_ORIGINAL,
+		threads: [],
+		updatedAt: '2026-08-14T12:00:00.000Z'
+	};
+
+	const blankLineDiff = generateUnifiedDiff(blankLineState);
+	const blankLineSummary = generateMarkdownSummary(blankLineState);
+
 	// ROADMAP RE-2. The two `<pre>` blocks above are MODULE output — they prove
 	// what `generateUnifiedDiff` does, not what the component ships. The
 	// component has three export surfaces for the same string (the `fm-diff-diff`
@@ -286,7 +329,7 @@
 	</section>
 
 	<section style="display: grid; gap: 0.5rem;">
-		<h2 style="margin: 0; font-size: 1rem;">Malformed YAML — raw fallback editor</h2>
+		<h2 style="margin: 0; font-size: 1rem;">Malformed YAML — not recognized as front matter</h2>
 		<div data-testid="fm-bad-wrapper" style="min-height: 34rem;">
 			<ReviewEditor id="fm-bad" bind:value={badValue} currentUserId="steve" />
 		</div>
@@ -436,5 +479,22 @@
 			data-testid="fm-imperative-summary"
 			data-value={json(imperativeSummary)}
 			style="margin: 0;">{imperativeSummary}</pre>
+	</section>
+
+	<section style="display: grid; gap: 0.5rem;">
+		<h2 style="margin: 0; font-size: 1rem;">Blank-line normalization agreement (fixed)</h2>
+		<p style="margin: 0;">
+			Same front matter, same body text — the only difference between original and current is how
+			many blank lines separate them. generateUnifiedDiff and generateMarkdownSummary now agree that
+			nothing changed.
+		</p>
+		<pre
+			data-testid="fm-blank-line-diff"
+			data-value={json(blankLineDiff.diff)}
+			style="margin: 0;">{blankLineDiff.diff}</pre>
+		<pre
+			data-testid="fm-blank-line-summary"
+			data-value={json(blankLineSummary.markdown)}
+			style="margin: 0;">{blankLineSummary.markdown}</pre>
 	</section>
 </div>

@@ -64,6 +64,7 @@ const HYDRATING_ROUTES = [
 	'/exercises/review-basics',
 	'/exercises/review-comment-creation',
 	'/exercises/review-comment-lifecycle',
+	'/exercises/review-diff-performance',
 	'/exercises/review-form-and-exports',
 	'/exercises/review-front-matter',
 	'/exercises/review-imperative',

@@ -483,7 +483,16 @@ test.describe('review-modes: mode is reflected everywhere and enforced in one pl
 		const editPopover = page.locator('#modes-edit-thread-popover');
 		await openThreadPopover(page, 'modes-edit');
 		await expect(editPopover).toHaveAttribute('role', 'dialog');
-		await expect(editPopover).toHaveAttribute('aria-modal', 'true');
+		// FIXED (cinder#1305): `aria-modal="true"` used to be asserted here, but
+		// it was a false claim the popover never backed up — nothing outside it
+		// was made `inert`, and F6 landmark navigation deliberately moves focus
+		// out to `.review-editor-main` while the popover stays open, which is
+		// the popover's intended non-modal workflow (an anchored comment
+		// popover, not a blocking dialog). The attribute is now genuinely
+		// absent rather than present-but-dishonest. Modality semantics belong
+		// to review-ssr-and-a11y; this is just the control this test's
+		// readonly-vs-edit comparison already needed matching the new baseline.
+		await expect(editPopover).not.toHaveAttribute('aria-modal');
 		await expect(editPopover.getByRole('button', { name: 'Delete thread' })).toBeEnabled();
 		await expect(editPopover.getByRole('button', { name: 'Edit comment' })).toHaveCount(1);
 		await expect(editPopover.getByRole('button', { name: 'Delete comment' })).toHaveCount(1);
@@ -901,7 +910,7 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 		await expect(page.locator('#modes-snapshot-selection-popover')).toHaveCount(0);
 	});
 
-	test('`placeholder` becomes an inline custom property unconditionally — and is never painted (pinned known bug)', async () => {
+	test('`placeholder` paints when the editor is empty, through a decoration that now actually arrives', async () => {
 		const inlinePlaceholder = (editorId: string) =>
 			page
 				.locator(`#${editorId}`)
@@ -909,10 +918,18 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 					(element as HTMLElement).style.getPropertyValue('--editor-placeholder')
 				);
 
-		// The prop is written straight onto the markdown-editor host as
-		// `style:--editor-placeholder="'{escaped}'"` with no emptiness check, so
-		// it is present on a fully populated document too — and it arrives as a
-		// QUOTED CSS string, ready for `content:`, not as a bare value.
+		// The prop is still written straight onto the markdown-editor host as
+		// `style:--editor-placeholder="'{escaped}'"` with no emptiness check —
+		// an earlier draft of the cinder#1306 fix DID gate this on `value`, but
+		// that gate was itself reverted in review: `value` is this component's
+		// own debounced `$bindable`, so for a few hundred ms after deleting the
+		// last character the synchronous ProseMirror decoration below had
+		// already cleared while `value` still reported old content, and the
+		// CSS's own fallback (`var(--editor-placeholder, 'Start writing...')`)
+		// painted the wrong text during that window. Unconditional-but-inert
+		// beats gated-but-briefly-wrong, so the property is present on a fully
+		// populated document too, arriving as a QUOTED CSS string ready for
+		// `content:`, not as a bare value.
 		//
 		// The quote CHARACTER is engine serialization, not component behavior:
 		// Chromium and Firefox hand back the author's original token text, while
@@ -930,31 +947,51 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 		expect(await inlinePlaceholder('modes-plain')).toBe(quoted('Start reviewing…'));
 		expect(await inlinePlaceholder('modes-edit')).toBe(quoted('Start writing...'));
 
-		// PINNED KNOWN BUG — this is what the shipped build does, not what the
-		// component intends. The stylesheet paints the placeholder through
+		// FIXED (cinder#1306). The stylesheet paints the placeholder through
 		// `.ProseMirror p.is-editor-empty:first-child::before`, and Milkdown's
-		// `placeholderPlugin` is supposed to decorate the first paragraph with
-		// that class whenever the document is empty. The decoration never
-		// reaches the DOM: `modes-plain` holds an empty document and an empty
-		// paragraph, and the class is absent — so the placeholder text is
-		// unreachable through the only prop that sets it.
+		// `placeholderPlugin` decorates the first paragraph with that class
+		// whenever the document is empty — the decoration itself was never the
+		// bug. What raced was its REGISTRATION: the lazy plugin that installs it
+		// used to import `@milkdown/kit/core` inside an async handler, so
+		// `EditorState.create()`'s one-time plugin snapshot usually ran before
+		// that import resolved and silently excluded it for the editor's whole
+		// life. Registering the timer synchronously (mirroring Milkdown's own
+		// `$proseAsync` pattern) wins that race every time, so `modes-plain`'s
+		// empty document now carries the class with no interaction needed.
 		await expect(page.getByTestId('modes-plain-value-length')).toHaveText('value length: 0');
 		const emptyParagraph = page.locator('#modes-plain .ProseMirror p');
 		await expect(emptyParagraph).toHaveCount(1);
-		await expect(emptyParagraph).not.toHaveClass(/is-editor-empty/);
+		await expect(emptyParagraph).toHaveClass(/is-editor-empty/);
 
-		// Isolate the failure to the missing decoration rather than to the
-		// plumbing: force the class on and the very same `::before` resolves to
-		// the passed placeholder, then put the DOM back the way it was.
+		// Read the pseudo-element the class unlocks without forcing anything —
+		// this is what a real paint pass resolves, not a simulated one. The
+		// browser's CSS-OM serialization of a resolved `content` value is
+		// double-quoted regardless of engine (unlike the raw custom-property
+		// text above, which preserves the author's own quote character), so
+		// this is a literal rather than `quoted()`.
 		const painted = await emptyParagraph.evaluate((paragraph) => {
-			const before = getComputedStyle(paragraph, '::before').content;
-			paragraph.classList.add('is-editor-empty');
-			const after = getComputedStyle(paragraph, '::before').content;
-			paragraph.classList.remove('is-editor-empty');
-			return { before, after };
+			const before = getComputedStyle(paragraph, '::before');
+			return { content: before.content, color: before.color };
 		});
-		expect(painted.before).toBe('none');
-		expect(painted.after).toBe('"Start reviewing…"');
+		expect(painted.content).toBe('"Start reviewing…"');
+		// A `content` string alone would still be the old bug one layer down —
+		// present but invisible. `color: transparent` (or an alpha-zero rgba)
+		// would mean exactly that, so pin genuine visibility, not merely a
+		// populated string.
+		expect(painted.color).not.toBe('rgba(0, 0, 0, 0)');
+		expect(painted.color).not.toBe('transparent');
+
+		// The decoration is a live ProseMirror computation, not a mount-time
+		// snapshot, so it hides the moment the document stops being empty —
+		// the same gesture a real reviewer would use.
+		await emptyParagraph.click();
+		await expect(page.locator('#modes-plain .ProseMirror')).toBeFocused();
+		await page.keyboard.type('No longer empty');
+		await expect(emptyParagraph).not.toHaveClass(/is-editor-empty/);
+		const afterTyping = await emptyParagraph.evaluate(
+			(paragraph) => getComputedStyle(paragraph, '::before').content
+		);
+		expect(afterTyping).toBe('none');
 
 		// Either way the placeholder is decoration and not content: a
 		// pseudo-element is invisible to the accessibility tree, and nothing

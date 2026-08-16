@@ -30,11 +30,20 @@ import { gotoHydrated } from '../hydration';
 // and `getEditor`. The page's header comment explains why they are separate
 // instances rather than more buttons on the two above.
 //
-// Two of RE-4's three acceptance criteria are NOT met by the shipped component,
-// and the tests below say so in their names and pin the current behaviour:
-// `scrollToThread` moves neither the document nor focus, and an unknown thread
-// id is indistinguishable from a successful call. Both are recorded here rather
-// than routed around.
+// RE-4's `scrollToThread` bugs (cinder#1316, cinder#1317) are FIXED and
+// VERIFIED as of `@lostgradient/editor@0.11.0`, and the two tests below are
+// retargeted against the fixed contract: `scrollToThread` now reaches the
+// same anchor `scroll-into-view-control` already reached, and an unknown
+// thread id throws rather than returning silently indistinguishable from a
+// successful call. (Focus still does not move either way, which is unchanged
+// and not one of the two bugs that were fixed.)
+//
+// That same 0.11.0 bump introduced a NEW regression in RE-3's `reset()`:
+// once `setMarkdown` had been called on an editor instance, a later `reset()`
+// no longer reached the live document. Filed as stevekinney/cinder#1328,
+// FIXED and VERIFIED as of `@lostgradient/editor@0.12.0` — the two tests in
+// the content-replacement block below are retargeted against the fixed
+// contract. See those tests themselves for the mechanism.
 
 const ROUTE = '/exercises/review-imperative';
 
@@ -1208,13 +1217,14 @@ test.describe('review-imperative: content replacement and reset (RE-3)', () => {
 		expect(report.fromGetMarkdown).not.toContain(REMOVED_QUOTE);
 	});
 
-	test('getAst matches the rendered document after setMarkdown and after reset', async ({
+	test('getAst still matches the DOM after setMarkdown, and reset now reaches the live document too', async ({
 		page
 	}) => {
-		// The BASELINE matters as much as the two mutations. Without it, a getAst
-		// that always answered with the document it was first given would satisfy
-		// "the AST agrees with the DOM" only until something changed — and this
-		// test is the one asking whether it tracks a change at all.
+		// The BASELINE matters as much as the setMarkdown mutation below. Without
+		// it, a getAst that always answered with the document it was first given
+		// would satisfy "the AST agrees with the DOM" only until something
+		// changed — and this test is the one asking whether it tracks a change at
+		// all.
 		expect(await readAst(page)).toEqual(await renderedBlocks(page));
 
 		await page.getByTestId('content-set-markdown').click();
@@ -1232,12 +1242,55 @@ test.describe('review-imperative: content replacement and reset (RE-3)', () => {
 		]);
 		expect(afterSet[0]).toEqual({ type: 'heading', depth: 3, text: CONTENT_HEADING });
 
+		// FIXED, as of `@lostgradient/editor@0.12.0`. This was a regression
+		// introduced in 0.11.0 (absent in 0.10.0 — confirmed at the time by
+		// deleting the one responsible line from the installed dist and watching
+		// this go green, then restoring it and watching it go red again). Filed
+		// as stevekinney/cinder#1328
+		// (https://github.com/stevekinney/cinder/issues/1328), fixed by guarding
+		// `MarkdownEditor.setMarkdown()`'s own `value` write with a read-compare
+		// (`if (value !== content) value = content;`) instead of writing it
+		// unconditionally.
+		//
+		// Mechanism, restated now that it is fixed rather than live: that
+		// unconditional `value = content;` statement, added in 0.11.0 right
+		// after `editorState.setMarkdown(content)`, ran even when `value`
+		// already equalled `content` — which is exactly what happens one
+		// statement into `ReviewEditor.reset()`'s own `value = original` having
+		// already pushed a new value down. The write-compare-write from
+		// `setMarkdown` used to fire regardless and re-stamp `value`, which
+		// broke `MarkdownEditor`'s bindable "sync external value changes" effect
+		// for that instance permanently: `ReviewEditor` passes
+		// `value={editorValue}` down ONE-WAY, not via `bind:value`, so `reset()`
+		// depends entirely on that effect noticing the prop moved. Guarding the
+		// write means `setMarkdown` no longer touches `value` at all once it
+		// already matches, so the effect stays connected and a later `reset()`
+		// keeps working.
+		//
+		// Checked on the block count AND the heading, unlike the old pin (which
+		// needed the inserted paragraph specifically, because `CONTENT_INITIAL`
+		// and `CONTENT_REPLACEMENT` share a heading and a heading-only assertion
+		// couldn't distinguish "reset landed `original`" from "reset did
+		// nothing"). `original`'s heading ("Content Baseline") differs from both
+		// of those, so post-fix the heading alone already discriminates; the
+		// block count is kept alongside it as the second, independent signal.
 		await page.getByTestId('content-reset').click();
 		await expect(page.locator('#imperative-content .ProseMirror > :is(h3,p)')).toHaveCount(2);
+		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(
+			'The rollout plan is still being drafted.'
+		);
+		await expect(page.locator('#imperative-content .ProseMirror')).not.toContainText(
+			'A late addition pushes'
+		);
 
+		// getAst still agrees with the DOM, and now BOTH have actually moved to
+		// `original` — the invariant this test's name promises, restored.
 		const afterReset = await readAst(page);
 		expect(afterReset).toEqual(await renderedBlocks(page));
-		expect(afterReset[0]).toEqual({ type: 'heading', depth: 3, text: CONTENT_ORIGINAL_HEADING });
+		expect(afterReset).toEqual([
+			{ type: 'heading', depth: 3, text: CONTENT_ORIGINAL_HEADING },
+			{ type: 'paragraph', depth: null, text: 'The rollout plan is still being drafted.' }
+		]);
 	});
 
 	test('reset restores original rather than the initial value, clears the dirty state, and releases every thread', async ({
@@ -1280,7 +1333,7 @@ test.describe('review-imperative: content replacement and reset (RE-3)', () => {
 		await expect(dirtyBadge).toHaveCount(0);
 	});
 
-	test('reset rides an ordinary undoable transaction rather than clearing the undo stack', async ({
+	test('reset now dispatches a real transaction, and it reaches the live document even once setMarkdown has run on the same instance', async ({
 		page
 	}) => {
 		await page.getByTestId('content-set-markdown').click();
@@ -1290,36 +1343,79 @@ test.describe('review-imperative: content replacement and reset (RE-3)', () => {
 		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(
 			'A late addition pushes'
 		);
-		const beforeReset = await probeUndoDepth(page, 1);
+		let probeCount = 1;
+		const beforeReset = await probeUndoDepth(page, probeCount);
+		// Anchors that setMarkdown's own transaction is history-tracked, which
+		// every undo claim below depends on.
 		expect(beforeReset).toBeGreaterThan(0);
 
+		// FIXED (stevekinney/cinder#1328) — same regression, and the same fix, as
+		// the `getAst` test above; see that test's comment for the full
+		// mechanism. `reset()` now reaches the live document even once
+		// `setMarkdown` has been called on this instance: `MarkdownEditor`'s
+		// bindable `value` keeps tracking `ReviewEditor`'s one-way
+		// `value={editorValue}` push, because `setMarkdown`'s own write is now
+		// guarded and no longer re-stamps `value` once it already matches.
 		await page.getByTestId('content-reset').click();
-		await expect(page.locator('#imperative-content .ProseMirror h3')).toHaveText(
+		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(
+			'The rollout plan is still being drafted.'
+		);
+		await expect(page.locator('#imperative-content .ProseMirror')).not.toContainText(
+			'A late addition pushes'
+		);
+
+		// The undo-depth NUMBER after reset is deliberately not asserted against
+		// `beforeReset` here, in either direction. Measured directly (not
+		// guessed): back-to-back clicks land reset's replaceAll inside
+		// prosemirror-history's `newGroupDelay` window of setMarkdown's, so the
+		// two get GROUPED into one history entry and the depth reads IDENTICAL
+		// before and after (confirmed deterministic over 5 runs) — forcing a
+		// >500ms gap between the two clicks (confirmed separately, not kept as
+		// a test — this repo does not pad waits) instead produces a second,
+		// ungrouped entry and the depth reads one higher. Both are "a
+		// transaction fired"; only the DOM content above tells them apart from
+		// "no transaction fired at all", which is what the pre-fix bug actually
+		// did. What IS asserted, and is true either way, is that the depth
+		// stays positive — the undo stack was not emptied or corrupted by the
+		// reset.
+		probeCount += 1;
+		const afterReset = await probeUndoDepth(page, probeCount);
+		expect(afterReset).toBeGreaterThan(0);
+
+		// One undo, regardless of grouping, stays inside the pre-reset lineage:
+		// grouped, it jumps past both transactions straight to the document
+		// setMarkdown started from; ungrouped, it lands on setMarkdown's own
+		// result. Either way that document still carries the REPLACEMENT
+		// heading (shared with the pre-setMarkdown document) and never the
+		// `original` heading — which is the deterministic, grouping-independent
+		// way to show reset's change was itself undoable at all.
+		await page.getByTestId('content-undo').click();
+		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(CONTENT_HEADING);
+		await expect(page.locator('#imperative-content .ProseMirror')).not.toContainText(
 			CONTENT_ORIGINAL_HEADING
 		);
-		const afterReset = await probeUndoDepth(page, 2);
 
-		// `>=`, deliberately. prosemirror-history groups adjacent transactions
-		// inside a 500ms window, so whether the reset becomes its own undo item or
-		// joins the previous one is a timing detail this test has no business
-		// pinning. What it DOES pin is that the stack was not thrown away:
-		// `reset` reaches the editor through `replaceAll` with its default
-		// `flush = false`, which dispatches an ordinary transaction rather than
-		// rebuilding `EditorState` — and only the rebuild clears history.
-		expect(afterReset).toBeGreaterThanOrEqual(beforeReset);
-
-		// Non-empty is not the same as usable, so the stack is actually spent: one
-		// undo moves the document off the reset result. Whichever way history
-		// grouped the two transactions, the answer is a document that is not the
-		// original — so this holds without depending on the grouping either.
-		//
-		// Asserted on the document rather than on a third depth reading. The undo
-		// releases the editor's own debounced change callback, which writes a
-		// re-serialised `value` back a moment later; whether that write costs
-		// another history entry is a detail of the serializer, and pinning a depth
-		// here would be pinning that instead of the undo.
-		await page.getByTestId('content-undo').click();
-		await expect(page.locator('#imperative-content .ProseMirror h3')).not.toHaveText(
+		// Unwinding the rest of the stack — by POLLING the depth rather than
+		// guessing how many clicks grouping needs — converges on the same place
+		// either way: the document from before setMarkdown ever ran.
+		probeCount += 1;
+		let depth = await probeUndoDepth(page, probeCount);
+		while (depth > 0) {
+			await page.getByTestId('content-undo').click();
+			probeCount += 1;
+			depth = await probeUndoDepth(page, probeCount);
+		}
+		await expect(page.locator('#imperative-content .ProseMirror h3')).toHaveText(CONTENT_HEADING);
+		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(
+			'The rollout plan names a dashboard owner and a migration owner.'
+		);
+		await expect(page.locator('#imperative-content .ProseMirror')).toContainText(
+			'The rollback checklist is owned by the platform team.'
+		);
+		await expect(page.locator('#imperative-content .ProseMirror')).not.toContainText(
+			'A late addition pushes'
+		);
+		await expect(page.locator('#imperative-content .ProseMirror')).not.toContainText(
 			CONTENT_ORIGINAL_HEADING
 		);
 	});
@@ -1373,7 +1469,7 @@ test.describe('review-imperative: scroll and editor handle (RE-4)', () => {
 	// that reads the query once.
 	test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
-	test('scrollToThread does not bring an off-screen thread into view (pinned known bug)', async ({
+	test('scrollToThread brings an off-screen thread into view, the same way the control does (cinder#1316)', async ({
 		page
 	}) => {
 		const anchoredId = await seedTall(page);
@@ -1383,43 +1479,43 @@ test.describe('review-imperative: scroll and editor handle (RE-4)', () => {
 		await page.evaluate(() => window.scrollTo(0, 0));
 		await pressControl(page, 'scroll-to-thread');
 
-		const report = await scrollReport(page);
-		expect(report.threadId).toBe(anchoredId);
-
 		// PRECONDITION, asserted rather than assumed. If the page ever stops
 		// putting this anchor below the fold, every assertion under it becomes
 		// vacuous, and this is the line that says so instead of going quietly
 		// green.
-		expect(report.before.anchorTop).not.toBeNull();
-		expect(report.before.anchorTop!).toBeGreaterThan(report.before.viewportHeight);
+		const before = await scrollReport(page);
+		expect(before.threadId).toBe(anchoredId);
+		expect(before.before.anchorTop).not.toBeNull();
+		expect(before.before.anchorTop!).toBeGreaterThan(before.before.viewportHeight);
+		expect(before.threw).toBeNull();
 
-		// The component DID try: exactly one `scrollTo` on `view.dom`, with the
-		// offset it computed. This is what separates "a guard refused the call"
-		// from "the call ran and achieved nothing", and it is the whole reason the
-		// page wraps that method rather than only sampling scroll positions.
-		expect(report.calls).toBe(1);
-		expect(report.threw).toBeNull();
+		// FIXED (cinder#1316): `scrollToThread` now delegates to
+		// `scrollAnchorIntoView`, the same `anchorElement.scrollIntoView(...)`
+		// mechanism `scroll-into-view-control` below already used successfully —
+		// so it no longer calls `view.dom.scrollTo` at all (that call is gone
+		// from the implementation entirely, not merely a guard that now passes),
+		// which is why this asserts the observable RESULT — something scrolled,
+		// and the anchor lands in view — rather than which private method got
+		// called. Polled rather than read once: `getScrollBehavior()` still
+		// returns 'instant' under this describe block's `reducedMotion: 'reduce'`
+		// context option, so this should already be true on the first read, but
+		// polling costs nothing and removes any cross-engine timing assumption.
+		await expect.poll(async () => (await scrollReport(page)).moved).toBe(true);
+		const after = await scrollReport(page);
+		expect(after.after.anchorTop).not.toBeNull();
+		expect(after.after.anchorTop!).toBeGreaterThan(0);
+		expect(after.after.anchorTop!).toBeLessThan(after.after.viewportHeight);
 
-		// And nothing moved. `view.dom` is the `.ProseMirror` contenteditable,
-		// which carries no `overflow` declaration in any stylesheet the package
-		// ships — the element that does is its ancestor `.markdown-editor` — so
-		// `scrollTo` on it is clamped to 0 and the window keeps its position.
-		expect(report.moved).toBe(false);
-		expect(report.after.winY).toBe(report.before.winY);
-		expect(report.after.domTop).toBe(0);
-		expect(report.after.scrollerTop).toBe(report.before.scrollerTop);
-		expect(report.after.anchorTop).toBe(report.before.anchorTop);
-
-		// Focus does not move either. RE-4 asks for it to land "somewhere sensible
-		// and assertable"; it lands nowhere, and the trigger keeps it.
-		expect(report.before.active).toBe('scroll-to-thread');
-		expect(report.after.active).toBe('scroll-to-thread');
+		// Focus does not move. RE-4 asks for it to land "somewhere sensible and
+		// assertable"; it lands nowhere, and the trigger keeps it — unchanged by
+		// the fix, and not one of the two things cinder#1316/#1317 were about.
+		expect(after.before.active).toBe('scroll-to-thread');
+		expect(after.after.active).toBe('scroll-to-thread');
 
 		// The CONTROL, and the reason none of the above is a fixture artefact: the
-		// same anchor, scrolled by `scrollIntoView` — the mechanism the component's
-		// own OTHER scroll path (`scrollAnchorIntoView`) already uses — lands
-		// inside the viewport. The anchor is reachable; `scrollToThread` is what
-		// does not reach it.
+		// same anchor, scrolled by the exact same `scrollIntoView` mechanism,
+		// lands in the same place `scrollToThread` now reaches on its own. With
+		// the fix, the two converge instead of only the control succeeding.
 		await page.getByTestId('scroll-into-view-control').click();
 		const control = await scrollReport(page);
 		expect(control.moved).toBe(true);
@@ -1455,7 +1551,7 @@ test.describe('review-imperative: scroll and editor handle (RE-4)', () => {
 		expect(report.moved).toBe(false);
 	});
 
-	test('scrollToThread with an unknown id fails invisibly rather than visibly (pinned known bug)', async ({
+	test('scrollToThread with an unknown id throws, rather than failing invisibly (cinder#1317)', async ({
 		page
 	}) => {
 		const anchoredId = await seedTall(page);
@@ -1463,23 +1559,25 @@ test.describe('review-imperative: scroll and editor handle (RE-4)', () => {
 		await pressControl(page, 'scroll-to-thread');
 		const succeeded = await scrollReport(page);
 		expect(succeeded.threadId).toBe(anchoredId);
+		expect(succeeded.threw).toBeNull();
 
 		await pressControl(page, 'scroll-to-unknown');
 		const failed = await scrollReport(page);
 		expect(failed.threadId).toBe('no-such-thread');
 
-		// RE-4 asks that an unknown id "fail visibly". Everything a caller can see
-		// is identical between a thread that exists and one that does not: the same
-		// `undefined` back, no throw either time, and nothing scrolled either time
-		// — for two entirely different reasons. The ONLY thing that differs is the
-		// private `view.dom.scrollTo` this page had to wrap in order to see it.
-		expect(failed.returned).toBe(succeeded.returned);
-		expect(failed.returned).toBe('undefined');
-		expect(failed.threw).toBeNull();
-		expect(succeeded.threw).toBeNull();
-		expect(failed.moved).toBe(succeeded.moved);
-		expect(succeeded.calls).toBe(1);
-		expect(failed.calls).toBe(0);
+		// FIXED (cinder#1317): a known id and an unknown one are no longer
+		// indistinguishable from outside. `scrollToThread` now throws
+		// `ReviewEditor.scrollToThread: no thread with id "..."` for an unknown
+		// id, and the page's `runScroll` wrapper (which calls the method inside a
+		// try/catch, per its own comment above `scrollReport`) surfaces that as
+		// `threw` rather than swallowing it — so the thrown error is observable
+		// through the same wrapper a consumer's own error boundary would see.
+		expect(failed.threw).not.toBeNull();
+		expect(failed.threw).toContain('no thread with id "no-such-thread"');
+		expect(failed.returned).toBe('(threw)');
+		// And the known-id call above is unaffected: it still throws nothing and
+		// still resolves to `undefined`, the same as before the fix.
+		expect(succeeded.returned).toBe('undefined');
 	});
 
 	test("getEditor hands back this instance's own live Milkdown editor", async ({ page }) => {

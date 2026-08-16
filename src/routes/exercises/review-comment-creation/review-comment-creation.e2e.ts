@@ -21,8 +21,11 @@ const ROUTE = '/exercises/review-comment-creation';
 const CREATION_PARAGRAPH = 'Export actions land in the second release.';
 
 /**
- * Pause between the keystrokes that build a selection, so each one gets its own
- * debounce window.
+ * Pause between the keystrokes that build a selection in `keyboardSelectFirstWord`,
+ * so each one gets its own debounce window. The only remaining use — a sibling
+ * single-keypress pause elsewhere in this file was removed after empirical testing
+ * found it unnecessary; see that call site's own comment for why a single keypress
+ * is a different situation from the burst below.
  *
  * INPUT PACING, NOT A WAIT — the distinction is the whole reason this constant
  * survived a sweep that deleted every other fixed duration in this file. Nothing
@@ -40,6 +43,26 @@ const CREATION_PARAGRAPH = 'Export actions land in the second release.';
  * not, and nothing retries. Typing at something closer to human speed is not a
  * workaround for a flaky test — it is three independent chances instead of one,
  * and if the component ignores all three the assertions below still fail.
+ *
+ * Tried and empirically falsified: replacing the pre-keypress sleep with a
+ * post-keypress `expect.poll` on `window.getSelection()?.toString().length`
+ * reaching the expected count. That looks like exactly the kind of observable
+ * condition a poll should replace a guess with, and it is — for the case where the
+ * keypress landed and the DOM just hasn't caught up yet. It is not sufficient for
+ * the actual failure mode. Two separate reproductions, on two different engines:
+ * removing the pacing outright (no poll at all) failed 2 of 10 runs on WebKIT,
+ * with this function's own final assertion catching a selection that stopped one
+ * character short ("Th" instead of "The") — proof the keystroke landed late, not
+ * that it never landed. The poll-based variant above failed differently, on
+ * CHROMIUM: one failure in a full-file `--repeat-each=10` run (roughly 1 in 150
+ * executions of this test), where the poll timed out at 5000ms stuck at length 0
+ * for the very first keypress — it never grew at all. In that case a keypress
+ * fired immediately after the setup click was not processed, so there was nothing
+ * for the poll to observe; a `toBeFocused()` check on the editor before the loop
+ * did not fix it either (tried that too, same failure). The pause has to come
+ * BEFORE the keypress, not be replaced by a check after it — neither reproduction
+ * was covered on all three engines, but both point at the same conclusion from
+ * different sides of the same race.
  *
  * Named for the interval it is, so it stops reading as a settle threshold
  * somebody guessed.
@@ -327,10 +350,36 @@ test.describe('review-comment-creation: the selection popover', () => {
 		// Extend the selection by a character and expand the popover over it. The
 		// expand is a click rather than Tab-then-Enter because the popover may be
 		// mid-remount from the race described below, and a click waits for it.
-		// Same pacing as `keyboardSelectFirstWord`, for the same reason: this
-		// keypress has to arrive as its own `selectionchange` burst rather than
-		// coalescing into the traffic the Escape above just produced.
-		await page.waitForTimeout(KEY_INTERVAL_MS);
+		//
+		// No pacing before this keypress, unlike `keyboardSelectFirstWord`'s loop —
+		// and that is not an oversight. This is ONE keypress, not a burst of three,
+		// so there is nothing for the browser to coalesce in the first place; the
+		// `selectionchange` it produces is the only one in flight. And the assertion
+		// that follows is `toBeVisible()`, an auto-retrying matcher — if the
+		// component's popover-open sample lands late relative to this keystroke, the
+		// poll just keeps checking rather than failing once. That is a materially
+		// different situation from `keyboardSelectFirstWord`, where the very next
+		// line is a one-shot `expect(...).toBe('The')` with no retry at all. It also
+		// fires later than the loop's first keypress does relative to its own setup:
+		// three assertions already ran between the Escape above and this keystroke
+		// (`toBeFocused`, the removal poll, and the selection-text check), so unlike
+		// the loop's very first `Shift+ArrowRight` — which follows a bare mouse click
+		// with nothing to settle on first — this keystroke only fires once the
+		// editor's refocus is independently confirmed, not merely assumed.
+		//
+		// Verified rather than assumed: this line used to carry the same
+		// `KEY_INTERVAL_MS` pause as the loop below, with a comment claiming the same
+		// coalescing risk. Removing it and running this test 25 times on each of
+		// chromium, webkit, and firefox (75 runs) produced zero failures, and three
+		// further full-file `--repeat-each=10` runs, one per engine (450 test
+		// executions total, 30 of them this specific test, at the same
+		// parallel-worker load that DOES reproduce `keyboardSelectFirstWord`'s race
+		// below) still produced zero failures here. Contrast that with the loop
+		// below, which failed for real under that exact load — see its own comment.
+		// That does not prove no race exists at any rate; the loop's own race showed
+		// up at roughly 1 in 150, and 105 clean executions here cannot rule out
+		// something similarly rare. What the difference in mechanism above argues is
+		// that if one exists here, it is not the same one.
 		await page.keyboard.press('Shift+ArrowRight');
 		await expect(popover).toBeVisible();
 		await popover.getByRole('button', { name: 'Add comment' }).click();

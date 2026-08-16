@@ -36,7 +36,8 @@ function surface(scope: Locator): Locator {
 async function openReviewViews(page: Page): Promise<void> {
 	await gotoHydrated(page, '/exercises/review-views');
 	// `data-ready` is the right signal for the FIRST interaction only. See the
-	// comment on `selectView` for why it is useless afterwards.
+	// comment on `selectView` for why it is still the wrong one to wait on
+	// after that, even though it no longer lies once the editor unmounts.
 	await expect(surface(instance(page, 'views-main'))).toHaveAttribute('data-ready', 'true');
 }
 
@@ -44,11 +45,16 @@ async function openReviewViews(page: Page): Promise<void> {
  * Click a view tab and wait for the swap.
  *
  * The settle signal is `data-view`, never `data-ready`. `data-ready` mirrors
- * `editorViewReady`, which the component sets once when the ProseMirror view
- * first reports ready and NEVER resets — so it stays `"true"` while the editor
- * is unmounted in the diff view and while a fresh one is mounting on the way
- * back. Waiting on it after a view switch waits for nothing at all. When the
- * editor pane itself is what matters, wait on `.ProseMirror`.
+ * `editorViewReady`, which the component now resets (cinder#1301) via an
+ * effect keyed on `editorRef` itself, so the attribute is absent for the
+ * whole time no `MarkdownEditor` is mounted — the Diff/Summary views, and the
+ * gap while a fresh one is mounting on the way back. That fixed a real bug
+ * (it used to stay `"true"` forever after the first mount), but it still
+ * means `data-ready` answers "is *some* editor mounted and ready", not "did
+ * the view finish switching": waiting on it after a view switch waits for the
+ * remount, one tick behind `data-view`, or for nothing at all in the
+ * Diff/Summary direction. When the editor pane itself is what matters, wait
+ * on `.ProseMirror`.
  */
 async function selectView(scope: Locator, name: ViewName): Promise<void> {
 	await scope.getByRole('tab', { name }).click();
@@ -127,21 +133,29 @@ test.describe('review-views: the view tablist', () => {
 		await expect(page.locator(DIFF_PANEL)).toHaveCount(0);
 	});
 
-	test('all three tabs always carry aria-controls, but only the selected one resolves', async () => {
+	test('only the selected tab carries aria-controls; unselected tabs carry none', async () => {
 		const main = instance(page, 'views-main');
 
-		// Every tab points at its panel id unconditionally, so in each view two
-		// of the three `aria-controls` references dangle. That is inherent to
-		// rendering one panel at a time and is worth pinning as the actual
-		// contract rather than assumed away.
+		// cinder#1303: every tab used to point at its panel id unconditionally,
+		// so in each view two of the three `aria-controls` references dangled —
+		// the view area renders exactly one panel at a time via an `{#if}`
+		// chain, not three panels with two merely hidden, so an inactive tab's
+		// target never existed in the document. Fixed by only passing `controls`
+		// to the active segment, so an unselected tab now omits `aria-controls`
+		// entirely rather than pointing it at a nonexistent id — a dangling
+		// reference fails axe's `aria-valid-attr-value` and any screen reader
+		// that follows the tab-to-panel relationship, where an absent attribute
+		// simply doesn't claim to control anything (yet).
 		const panelIds = { Editor: EDITOR_PANEL, Diff: DIFF_PANEL, Summary: SUMMARY_PANEL } as const;
 		for (const view of ['Editor', 'Diff', 'Summary'] as const) {
 			await selectView(main, view);
 			for (const tab of ['Editor', 'Diff', 'Summary'] as const) {
-				await expect(main.getByRole('tab', { name: tab })).toHaveAttribute(
-					'aria-controls',
-					panelIds[tab].slice(1)
-				);
+				const tabLocator = main.getByRole('tab', { name: tab });
+				if (tab === view) {
+					await expect(tabLocator).toHaveAttribute('aria-controls', panelIds[tab].slice(1));
+				} else {
+					await expect(tabLocator).not.toHaveAttribute('aria-controls');
+				}
 				await expect(page.locator(panelIds[tab])).toHaveCount(tab === view ? 1 : 0);
 			}
 		}
@@ -689,12 +703,19 @@ test.describe('review-views: leaving the editor view destroys the editor', () =>
 		// was hosted in the control bar.
 		await expect(main.locator('.ProseMirror')).toHaveCount(0);
 		await expect(main.locator('.controls-formatting')).toHaveCount(0);
-		// `data-ready` is STICKY: it still claims the editor is ready while no
-		// editor exists. This is exactly why `selectView` waits on `data-view`.
-		await expect(surface(main)).toHaveAttribute('data-ready', 'true');
+		// `data-ready` used to be STICKY (cinder#1301): it kept claiming the
+		// editor was ready even after it unmounted, because the latch behind it
+		// was set once and never cleared. Fixed by deriving the reset from
+		// `editorRef` itself, so the attribute is now correctly absent for as
+		// long as no editor is mounted — pinned here, not just in
+		// `review-ssr-and-a11y`'s own coverage of the same fix, because this is
+		// the test that actually drives an editor through the unmount.
+		await expect(surface(main)).not.toHaveAttribute('data-ready');
 
 		await selectView(main, 'Editor');
 		await expect(main.locator('.ProseMirror')).toBeVisible();
+		// …and comes back once the remounted editor reports ready again.
+		await expect(surface(main)).toHaveAttribute('data-ready', 'true');
 
 		// A different DOM node: the stamp did not come back with it.
 		await expect(main.locator('.ProseMirror')).not.toHaveAttribute('data-probe', 'first');

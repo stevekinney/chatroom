@@ -127,8 +127,16 @@ test.describe('review front matter: recognition and generated controls', () => {
 			page.getByTestId('fm-leading-blank-wrapper').locator('.ProseMirror')
 		).toContainText('title: x');
 
-		// Eight of the eleven fixtures have front matter; the three above do not.
-		await expect(page.locator('section.review-editor-front-matter')).toHaveCount(EDITOR_COUNT - 3);
+		// Seven of the eleven fixtures have front matter. The three above fail on
+		// DELIMITER shape (a fourth dash, a `...` closer, an opener not at byte
+		// 0). A fourth fixture, `fm-bad` (exercised below, in the next describe),
+		// fails on CONTENT shape instead: its YAML has a genuine syntax error.
+		// cinder#1325/#1330 folded that case into the identical `hasFrontMatter:
+		// false` outcome as an unrecognized delimiter, rather than the
+		// "recognized but invalid, show a raw editor" state it used to produce —
+		// see "malformed YAML — a genuine syntax error — is not recognized as
+		// front matter at all" below for the detail.
+		await expect(page.locator('section.review-editor-front-matter')).toHaveCount(EDITOR_COUNT - 4);
 	});
 
 	test('a CRLF document is recognized and its data parsed, and the CRLF survives in `value`', async () => {
@@ -276,10 +284,12 @@ test.describe('review front matter: recognition and generated controls', () => {
 });
 
 test.describe('review front matter: what an edit rewrites', () => {
-	// One page for the mutating tests. Order matters WITHIN a fixture (the
-	// invalid-YAML test must run before the one that makes the YAML parseable),
-	// so the tests are ordered deliberately; Playwright runs a file's tests
-	// serially in declaration order.
+	// One page for the mutating tests. Order matters WITHIN a fixture: `fm-full`'s
+	// two tests are a pair, and so are `fm-empty`'s two ("doubles as the way to
+	// add a first field" must run before "the field controls cannot make the
+	// YAML unparseable again", which relies on the `title` field the first test
+	// creates). Playwright runs a file's tests serially in declaration order, so
+	// the tests are ordered deliberately.
 	let page: Page;
 
 	test.beforeAll(async ({ browser }) => {
@@ -324,30 +334,33 @@ test.describe('review front matter: what an edit rewrites', () => {
 		);
 	});
 
-	test('malformed YAML falls back to a single raw editor that is invalid, described, and inert', async () => {
-		// `title: [unclosed` opens a flow sequence that never closes, so
-		// `parseFrontMatter` reports `hasFrontMatter: true` but `data: null` —
-		// which is what selects the raw branch. It also emits a console warning
-		// ("Failed to parse front matter: YAMLException…"), so any console
-		// assertion on this route has to allow that message.
-		const raw = page.locator('textarea#fm-bad-front-matter-raw');
-		await expect(frontMatterSection(page, 'fm-bad').locator('input, textarea')).toHaveCount(1);
-		// The raw editor holds the INNER YAML only — no `---` delimiters.
-		await expect(raw).toHaveValue('title: [unclosed\n  - what');
-		// `aria-invalid`/`aria-describedby` are wired up by an `$effect`, so they
-		// are absent from the SSR markup and only appear after hydration.
-		await expect(raw).toHaveAttribute('aria-invalid', 'true');
-		await expect(raw).toHaveAttribute('aria-describedby', 'fm-bad-front-matter-raw-error');
-		// The description is the js-yaml message plus its code frame, surfaced
-		// verbatim — including the `(line:column)` suffix and the `-----^` caret.
-		const error = page.locator('#fm-bad-front-matter-raw-error');
-		await expect(error).toContainText('unexpected end of the stream within a flow collection');
-		await expect(error).toContainText('-----^');
+	test('malformed YAML — a genuine syntax error — is not recognized as front matter at all', async () => {
+		// `title: [unclosed` opens a flow sequence that never closes: a genuine
+		// YAML syntax error, not merely "valid YAML that isn't a mapping". Before
+		// cinder#1325/#1330 this fixture's document still reported
+		// `hasFrontMatter: true` with `data: null`, which used to select a raw
+		// YAML fallback editor (and log a console warning — "Failed to parse
+		// front matter: YAMLException…"). The same PR that stopped counting
+		// non-object-but-valid YAML as front matter also folded a genuine parse
+		// failure into the identical `hasFrontMatter: false` branch as an
+		// unrecognized delimiter — `parseFrontMatter`'s `catch` block, not its
+		// `!isRecord` branch. Verified directly against the installed
+		// `@lostgradient/markdown`, calling `parseFrontMatter` on this fixture's
+		// exact document: it now returns `{ hasFrontMatter: false, body: <the
+		// whole document> }`. There is no longer a raw-editor-for-invalid-content
+		// state reachable from this fixture at all, and no console warning fires
+		// either — the `catch` block is silent.
+		await expect(frontMatterSection(page, 'fm-bad')).toHaveCount(0);
 
-		// Editing to another INVALID state re-describes the error but leaves the
-		// bound document untouched: `handleRawInput` bails before `onchange`.
-		await raw.fill('title: [still unclosed');
-		await expect(error).toContainText('title: [still unclosed');
+		// Proof it's content, not silently dropped: the un-recognized `---`
+		// lines vanish as thematic breaks — the same Markdown reading the
+		// delimiter-matrix fixtures get above — while the YAML text inside them
+		// survives as ordinary body text.
+		await expect(page.getByTestId('fm-bad-wrapper').locator('.ProseMirror')).toContainText(
+			'title: [unclosed'
+		);
+
+		// Nothing was edited, so the bound value round-trips byte-for-byte.
 		await expect(page.getByTestId('fm-bad-value')).toHaveAttribute(
 			'data-value',
 			JSON.stringify(
@@ -363,41 +376,6 @@ test.describe('review front matter: what an edit rewrites', () => {
 				].join('\n')
 			)
 		);
-	});
-
-	test('the raw editor vanishes at the first parseable keystroke, mid-word', async () => {
-		// `title:` on its own is valid YAML for `{ title: null }`. There is no
-		// debounce and no "apply" step, so the raw editor is replaced by field
-		// controls while the author is still typing the key — and the document is
-		// rewritten to the serializer's spelling of that value.
-		await page.locator('textarea#fm-bad-front-matter-raw').fill('title:');
-
-		await expect(page.locator('textarea#fm-bad-front-matter-raw')).toHaveCount(0);
-		const title = page.locator('#fm-bad-front-matter-title');
-		await expect(title).toHaveValue('null');
-		await expect(page.getByTestId('fm-bad-value')).toHaveAttribute(
-			'data-value',
-			JSON.stringify(
-				['---', 'title: null', '---', '', '# Release Plan', '', 'Alpha line.'].join('\n')
-			)
-		);
-	});
-
-	test('once parseable, the field controls cannot make the YAML unparseable again', async () => {
-		// Recovering the raw editor requires `data` to be null again, which
-		// requires unparseable YAML. The field UI cannot produce that: a string
-		// field always QUOTES anything YAML-significant, so typing the same
-		// `[unclosed` that broke the document originally now round-trips as a
-		// perfectly valid quoted scalar.
-		await page.locator('#fm-bad-front-matter-title').fill('[unclosed');
-
-		await expect(page.getByTestId('fm-bad-value')).toHaveAttribute(
-			'data-value',
-			JSON.stringify(
-				['---', 'title: "[unclosed"', '---', '', '# Release Plan', '', 'Alpha line.'].join('\n')
-			)
-		);
-		await expect(page.locator('textarea#fm-bad-front-matter-raw')).toHaveCount(0);
 	});
 
 	test('touching a null field writes a quoted string, with no way back to null', async () => {
@@ -423,6 +401,18 @@ test.describe('review front matter: what an edit rewrites', () => {
 		// dedicated "add field" affordance anywhere in the section; this is it.
 		// Also note the serializer keeps `---\n---\n` documents alive
 		// (`preserveEmptyFrontMatter`), so the delimiters were never at risk.
+		//
+		// There is also no debounce and no "apply" step — a single `.fill()`
+		// commits immediately, with no separate step to confirm it. (This used
+		// to have its own dedicated test, pinned on `fm-bad`'s raw editor and
+		// filling just `'title:'` to land "mid-word." That fixture no longer
+		// offers a raw editor at all — see the malformed-YAML test above — but
+		// the "mid-word" framing was never actually exercising keystroke
+		// granularity to begin with: Playwright's `.fill()` dispatches a single
+		// `input` event carrying the final value, so a partial-looking string
+		// like `'title:'` proves the same thing a complete one does. No coverage
+		// is lost by retiring it; this test's single `.fill()` already pins the
+		// same no-debounce commit.)
 		await page.locator('textarea#fm-empty-front-matter-raw').fill('title: x');
 
 		await expect(page.getByTestId('fm-empty-value')).toHaveAttribute(
@@ -430,6 +420,31 @@ test.describe('review front matter: what an edit rewrites', () => {
 			JSON.stringify(['---', 'title: x', '---', '', 'Body.'].join('\n'))
 		);
 		await expect(page.locator('#fm-empty-front-matter-title')).toHaveValue('x');
+	});
+
+	test('once parseable, the field controls cannot make the YAML unparseable again', async () => {
+		// This used to be pinned on `fm-bad`'s raw-editor-to-field transition:
+		// type `[unclosed` into the `title` field that a parseable keystroke had
+		// just created, and confirm it can't reproduce the syntax error that
+		// broke the document originally. `fm-bad` no longer offers a raw editor
+		// at all (a genuine YAML syntax error is never recognized as front
+		// matter now — see above), so there is no reachable "recognized front
+		// matter, still showing a raw editor" state left to re-break on that
+		// fixture. `fm-empty`, converted to field controls by the test above, is
+		// the only fixture left on this page that reaches field controls by way
+		// of a raw editor, so the invariant now pins here instead: recovering
+		// the raw editor requires `data` to be null again, which requires
+		// unparseable YAML, and the field UI cannot produce that — a string
+		// field always QUOTES anything YAML-significant, so typing the same
+		// `[unclosed` that would break a raw editor round-trips as a perfectly
+		// valid quoted scalar instead.
+		await page.locator('#fm-empty-front-matter-title').fill('[unclosed');
+
+		await expect(page.getByTestId('fm-empty-value')).toHaveAttribute(
+			'data-value',
+			JSON.stringify(['---', 'title: "[unclosed"', '---', '', 'Body.'].join('\n'))
+		);
+		await expect(page.locator('textarea#fm-empty-front-matter-raw')).toHaveCount(0);
 	});
 
 	test('readonly ignores a programmatic input event on a front-matter control', async () => {
@@ -753,12 +768,22 @@ const INVENTED_UNDERLINE_IN_SUMMARY = /^[-+]-{8,}$/m;
 
 test.describe('review front matter: every export surface ships the same patch', () => {
 	// The one-key change's summary, byte for byte. Worth pinning next to the diff
-	// because the two functions do NOT agree about normalization:
+	// because the two functions used NOT to agree about normalization:
 	// `generateUnifiedDiff` parses the front matter off and normalizes the body,
-	// while `generateMarkdownSummary` runs `computeLineDiff` on the raw strings
-	// with no normalization step at all. On this fixture they happen to describe
-	// the same change; the literal is here so that if that stops being true, it
-	// stops loudly.
+	// while `generateMarkdownSummary` used to run `computeLineDiff` on the raw
+	// strings with no normalization step at all. The literal is here so that if
+	// they stop agreeing again, it stops loudly.
+	//
+	// ROADMAP X-2's remaining acceptance criterion — construct an input where
+	// the two actually disagree — used to be met below, in the "blank-line
+	// normalization" describe: a fixture whose only difference is how many
+	// blank lines separate front matter from body, where `generateUnifiedDiff`
+	// reported zero changes and `generateMarkdownSummary` reported a real edit.
+	// Fixed in `@lostgradient/editor@0.11.0`, which gave `generateMarkdownSummary`
+	// its own `normalizeInputs` option (defaulting to `true`) routed through the
+	// same shared `normalizeDocument` as `generateUnifiedDiff` — both functions
+	// now agree on that fixture too. Fixed and verified in
+	// https://github.com/stevekinney/cinder/issues/1318.
 	const EXPECTED_SUMMARY = [
 		'## Changes Made',
 		'',
@@ -860,5 +885,62 @@ test.describe('review front matter: every export surface ships the same patch', 
 		// No threads on this fixture, so the Feedback section is absent entirely
 		// rather than present and empty.
 		expect(summary).not.toContain('## Feedback');
+	});
+});
+
+// ROADMAP X-2's remaining criterion was an input where `generateUnifiedDiff`
+// and `generateMarkdownSummary` actually disagreed, not just documenting that
+// they COULD. This fixture's original and current front matter and body text
+// are byte-identical — the only difference is how many blank lines separate
+// the closing `---` from the body (one vs. three) — and it used to be exactly
+// such a case.
+//
+// `generateUnifiedDiff`'s `normalizeDocument` (`normalizeInputs` defaults to
+// `true`) re-attaches front matter to the body with a single hardcoded `\n`
+// separator, and runs the body through the markdown pipeline's `normalize()`,
+// which strips every leading blank line before re-serializing — so ANY count
+// of blank lines there collapses to the same normalized document.
+// `generateMarkdownSummary`'s `computeLineDiff` used to run on the raw strings
+// with no normalization step at all, so it saw the extra blank lines as real
+// content: one function reported zero changes, the other reported an edit.
+//
+// Fixed in `@lostgradient/editor@0.11.0`: `generateMarkdownSummary` gained its
+// own `normalizeInputs` option, defaulting to `true`, and now goes through the
+// same shared `normalizeDocument` as `generateUnifiedDiff`. Both functions
+// collapse this fixture's blank-line difference the same way and now agree
+// that nothing changed.
+//
+// This was reachable through the public surface even though no UI keystroke
+// sequence could type it: ProseMirror collapses adjacent blank paragraphs, but
+// `ReviewState.original` is consumer-supplied verbatim (it is never routed
+// through the editor), and `setState` round-trips persisted content the same
+// way — so any external tool or hand-edited save file that changed blank-line
+// spacing near front matter used to produce exactly this pair.
+//
+// Fixed and verified in https://github.com/stevekinney/cinder/issues/1318.
+test.describe('review front matter: blank-line normalization agreement (fixed)', () => {
+	let page: Page;
+
+	test.beforeAll(async ({ browser }) => {
+		page = await openFixture(browser);
+	});
+
+	test.afterAll(async () => {
+		await page.close();
+	});
+
+	test('generateUnifiedDiff and generateMarkdownSummary both report no change, on a blank-line-only edit', async () => {
+		// generateUnifiedDiff: front matter and body normalize to the identical
+		// string regardless of how many blank lines separated them, so original
+		// and current collapse to the same document and no hunk is produced.
+		await expect(page.getByTestId('fm-blank-line-diff')).toHaveAttribute('data-value', '""');
+
+		// generateMarkdownSummary: now normalizes the same way by default, so it
+		// also sees the identical normalized document and reports no change —
+		// agreeing with generateUnifiedDiff instead of diverging from it.
+		await expect(page.getByTestId('fm-blank-line-summary')).toHaveAttribute(
+			'data-value',
+			JSON.stringify('No changes or feedback to report.')
+		);
 	});
 });

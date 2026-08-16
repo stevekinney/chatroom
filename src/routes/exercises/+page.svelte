@@ -27,6 +27,7 @@
 		| 'review-state-and-session'
 		| 'review-ssr-and-a11y'
 		| 'review-imperative'
+		| 'review-diff-performance'
 		| 'diff-viewer'
 		| 'markdown-editor'
 		| 'row-reconciliation';
@@ -213,6 +214,13 @@
 			href: resolve('/exercises/review-imperative'),
 			title: 'Review Imperative Mutation',
 			description: 'Drive the eight thread and comment mutation methods through bind:this.'
+		},
+		{
+			slug: 'review-diff-performance',
+			href: resolve('/exercises/review-diff-performance'),
+			title: 'Review Diff Performance',
+			description:
+				'ROADMAP X-1: measure the per-keystroke cost of the toolbar diff recompute against a large document.'
 		},
 		{
 			slug: 'diff-viewer',

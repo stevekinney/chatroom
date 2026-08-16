@@ -193,13 +193,13 @@ instead:
   deliberate behavior change beyond the bug fix: focus outside every instance (including `<body>`)
   now fires nothing, even with a single `DiffViewer` on the page. `diff-viewer.e2e.ts` pins the
   fixed contract and goes red against the reverted dist.
-- The `/exercises` routes — 28 of them, one per surface area — exist to smoke out this kind of
-  friction; building them filed cinder#778–786, cinder#863–864, cinder#1288, cinder#1291,
-  cinder#1292, cinder#1295, cinder#1298, cinder#1299, cinder#1309, cinder#1310, and
-  agent-bureau#244–245 — all since resolved. Six more are open and not yet resolved:
-  cinder#1301–#1306, the `A11Y-4` pinned-bug tests — see `ROADMAP.md` for what each one covers and
-  the loop's current state, rather than duplicating that here where it would drift out of sync
-  again. A seventh, cinder#1307, is the same normalizer-divergence class `X-2` investigates.
+- The `/exercises` routes — 29 of them, one per surface area — exist to smoke out this kind of
+  friction; building and exercising them has filed and resolved a long list of upstream issues
+  across cinder and agent-bureau, most recently the `A11Y-4`/`X-2`/`X-3` campaign
+  (cinder#1301–#1307, #1316–#1320) and the two release cycles after it
+  (cinder#1324/#1325/#1328, cinder#1336) — see `ROADMAP.md` for what each one covers and the
+  current state, rather than duplicating that here where it would drift out of sync again, which
+  is exactly what the previous version of this note had already done.
 
 ## Filing and resolving upstream issues
 

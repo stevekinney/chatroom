@@ -170,21 +170,6 @@ function currentMarkdown(page: Page) {
 }
 
 /**
- * The formatting toolbar's block-type button label ("Block type: Heading 2").
- *
- * It is the one thing on the page that reports ProseMirror's OWN selection
- * rather than the DOM's: the toolbar renders from editor state, so a caret move
- * is not visible here until the editor has actually processed it. That makes it
- * the correct thing to wait on before pressing a key whose effect depends on
- * where the editor thinks the caret is.
- */
-function blockTypeLabel(page: Page): Promise<string | null> {
-	return page
-		.locator(`#${EDITOR_ID}-toolbar button[aria-label^="Block type"]`)
-		.getAttribute('aria-label');
-}
-
-/**
  * Install a MutationObserver over the editor's announcer regions BEFORE an
  * action, so the spec can assert on messages that only exist for ~1s.
  *
@@ -523,9 +508,7 @@ test.describe('review-ssr-and-a11y: what hydration adds', () => {
 		await expect(formatting).toHaveAttribute('aria-controls', EDITOR_ID);
 	});
 
-	test('data-ready is a first-paint signal only — it survives an unmount (pinned known bug)', async ({
-		page
-	}) => {
+	test('data-ready correctly reflects unmount, not just first paint', async ({ page }) => {
 		await ready(page);
 
 		// Switching away from the editor view DESTROYS the MarkdownEditor: the
@@ -534,16 +517,22 @@ test.describe('review-ssr-and-a11y: what hydration adds', () => {
 		await expect(page.locator(`#${EDITOR_ID}`)).toHaveCount(0);
 		await expect(page.locator('.ProseMirror')).toHaveCount(0);
 
-		// KNOWN BUG, pinned as-is: `data-ready` is derived from a latch
-		// (`editorViewReady`) that is set once and never cleared, so it keeps
-		// claiming "true" while nothing is mounted. It is a correct signal for
-		// "the editor finished its FIRST mount" and a misleading one for "an
-		// editor is available right now" — a consumer that waits on it after a
-		// view switch will act on an editor that does not exist.
-		await expect(page.getByTestId('review-editor')).toHaveAttribute('data-ready', 'true');
+		// FIXED, cinder#1301: `data-ready` used to be derived from a latch
+		// (`editorViewReady`) that was set once and never cleared, so it kept
+		// claiming "true" while nothing was mounted. It is now derived from an
+		// `$effect` that watches `editorRef` itself — Svelte's own `bind:this`
+		// contract unbinds that reference back to `undefined` on teardown — so
+		// the attribute correctly goes ABSENT (not `"false"`; the component
+		// renders `undefined` for "not ready") the moment the inner editor
+		// unmounts, covering the view-switch teardown path and, by construction,
+		// any other reason the inner editor goes away.
+		await expect(page.getByTestId('review-editor')).not.toHaveAttribute('data-ready');
 
-		// It stays "true" across the remount too, so nothing about the round trip
-		// is observable through it.
+		// …and it correctly reports "ready" again once the remount actually
+		// completes, rather than just staying silent forever. This is the other
+		// half of "reflects", not just "resets": a reader waiting on this
+		// attribute across a view round trip sees false, then true again, in
+		// step with a real editor existing or not.
 		await page.getByRole('tab', { name: 'Editor' }).click();
 		await expect(page.locator('.ProseMirror')).toBeVisible();
 		await expect(page.getByTestId('review-editor')).toHaveAttribute('data-ready', 'true');
@@ -792,129 +781,138 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		expect(stops.filter((stop) => stop.inEditorMain)).toHaveLength(2);
 	});
 
-	test('Tab is swallowed inside a list and silently indents it, but escapes from prose (pinned known bug)', async ({
+	test('Escape then Tab escapes a list without editing it, and Mod-]/Mod-[ indent and outdent directly', async ({
 		page,
 		browserName
 	}) => {
 		await ready(page);
 
-		// Arrive at the editable surface the way a keyboard user does — the walk
-		// the first test in this describe pins — rather than by clicking into it.
-		// Both halves of that choice are load-bearing. "Is this a keyboard trap"
-		// is a question about the caret the KEYBOARD leaves behind, and a click is
-		// racy here besides: ProseMirror reads the DOM selection into its own
-		// state asynchronously, so a Tab pressed shortly after a click is
-		// sometimes still evaluated against the selection the editor mounted with.
-		// Measured over repeat runs, click-then-Tab lands on either of the two
-		// outcomes below, for reasons that have nothing to do with either.
-		// Tab UNTIL the editable surface, rather than naming the six stops on the
-		// way. The intermediate stops are pinned by the two tab-order tests above
-		// (which is where an engine that orders them differently belongs); here
-		// they are only scaffolding, and hard-coding them made this test fail in
-		// WebKit for a reason that has nothing to do with the keyboard trap it
-		// exists to pin — WebKit omits buttons from the Tab order, so the walk
-		// never arrived. Bounded so a surface that never takes focus fails loudly
-		// instead of looping.
-		await page.getByTestId('tab-order-start').focus();
-		await tabToEditableSurface(page, browserName);
+		/**
+		 * Walk to the editable surface (the webkit-aware helper above) and poll
+		 * until the caret is genuinely sitting in the checklist's LAST bullet —
+		 * where Tab tabs in by default in this fixture. Re-used below because the
+		 * first assertion in this test walks focus back out of the component.
+		 */
+		async function settleOnLastBullet(): Promise<void> {
+			await page.getByTestId('tab-order-start').focus();
+			await tabToEditableSurface(page, browserName);
+			await expect
+				.poll(() => caretBlock(page))
+				.toMatchObject({
+					tag: 'P',
+					text: expect.stringContaining('Document review export behavior')
+				});
+		}
 
-		// Tabbing in puts the caret at the END of the document, not at its start —
-		// which in this fixture is the last bullet of the checklist. Everything
-		// below follows from that: it is a LIST ITEM the keyboard hands the user.
-		await expect
-			.poll(() => caretBlock(page))
-			.toMatchObject({
-				tag: 'P',
-				text: expect.stringContaining('Document review export behavior')
-			});
+		// The debounced markdown export — component-level `debounceMs: 300`,
+		// stacked on `@milkdown/plugin-listener`'s own ~200ms internal debounce
+		// (see `markdown-editor.svelte`'s own comment on this exact stacking) —
+		// means a read straight after a keypress can pass by racing ahead of a
+		// real, slightly-delayed mutation rather than by there being none. Every
+		// "did this edit the document" check below is an auto-retrying
+		// `toHaveAttribute`/`.not.toHaveAttribute()` match, which polls out that
+		// window on its own rather than needing a fixed wait in front of it.
 
-		// KNOWN BUG, pinned as-is — a WCAG 2.1.2 keyboard trap, and a
-		// document-mutating one. Tab and Shift+Tab are bound in the editor's
-		// keymap to sink/lift-list-item, so at the position the keyboard just
-		// delivered the caret to, both are consumed: focus never leaves the
-		// surface, and each press silently re-indents the bullet the caret is in.
-		// So the user gets no way out AND an edit they did not ask for; the only
-		// signal that anything happened is the indentation change itself.
-		await page.keyboard.press('Tab');
-		await expect(currentMarkdown(page)).toHaveAttribute(
-			'value',
-			/\n {2}[*-] Document review export behavior/
-		);
-		await expect.poll(() => activeDescriptor(page)).toMatchObject({ role: 'textbox' });
+		await settleOnLastBullet();
+		const markdownBefore = await currentMarkdown(page).getAttribute('value');
+		expect(markdownBefore).not.toBeNull();
 
-		await page.keyboard.press('Shift+Tab');
-		await expect(currentMarkdown(page)).toHaveAttribute(
-			'value',
-			/\n[*-] Document review export behavior/
-		);
-		await expect.poll(() => activeDescriptor(page)).toMatchObject({ role: 'textbox' });
-
-		// Escape does not offer the usual "release the trap" affordance either:
-		// the Tab after it indents the bullet again instead of moving on.
+		// FIXED, cinder#1302 — this was a WCAG 2.1.2 keyboard trap. Bare
+		// Tab/Shift-Tab are STILL bound to sink/lift-list-item at this position
+		// by design (commonmark's own list keymap; that binding is not itself
+		// the bug) — what was missing was an escape route. Pressing Escape now
+		// arms a one-shot latch (`keymap-plugin.ts`'s `createTabEscapeLatch`)
+		// that the very next Tab consumes instead of sinking, provided nothing
+		// else changed the document or selection in between. This is the
+		// keyboard route the toolbar's own shortcut list documents ('Move focus
+		// out of the editor (then Tab)': Esc), and it is reachable at all only
+		// because the fix stripped Tab/Shift-Tab from the commonmark list keymap
+		// and the GFM table keymap — both bound the identical trap and both used
+		// to run AHEAD of this latch in Milkdown's keymap chain, so the
+		// Escape-armed release could never be reached before.
 		await page.keyboard.press('Escape');
 		await page.keyboard.press('Tab');
+		// No waitForTimeout: toHaveAttribute is an auto-retrying matcher, so
+		// polling it toward markdownBefore's captured value already waits out
+		// the debounce chain (see the comment above) while proving the SAME
+		// thing a fixed-then-check pair would, on a concrete condition instead
+		// of a guessed duration -- matching the fix already applied to the two
+		// Mod-]/Mod-[ checks below.
+		await expect(currentMarkdown(page)).toHaveAttribute('value', markdownBefore!);
+		// The exact element differs by engine (a trailing button in Chromium and
+		// Firefox; WebKit's native Tab can't reach that button at all — see
+		// `../keyboard`'s own doc comment — so it lands on `<body>` instead) but
+		// "no longer anywhere inside the editor" is true everywhere.
+		await expect.poll(() => activeDescriptor(page)).toMatchObject({ inEditorMain: false });
+
+		// Mod-]/Mod-[ are the shortcut this fix freed up (from the commonmark
+		// list keymap, which used to bind them to Tab/Shift-Tab too) to
+		// indent/outdent directly — no Escape ceremony, and useable from
+		// anywhere in the list, not just the position Tab happens to hand you.
+		// "Mod" is platform-, not engine-, dependent — the same mac detection
+		// the package's own `getShortcutDisplay` uses (`keymap-plugin.ts`).
+		const isMac = await page.evaluate(() => /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+		await settleOnLastBullet();
+		// No waitForTimeout before either check below: toHaveAttribute/
+		// .not.toHaveAttribute() are auto-retrying matchers, so they already
+		// poll out the debounce window themselves -- a fixed wait in front of
+		// one would be pure padding, proving nothing a poll doesn't already
+		// give for free.
+		await page.keyboard.press(isMac ? 'Meta+]' : 'Control+]');
 		await expect(currentMarkdown(page)).toHaveAttribute(
 			'value',
 			/\n {2}[*-] Document review export behavior/
 		);
-		await expect.poll(() => activeDescriptor(page)).toMatchObject({ role: 'textbox' });
 
-		// …and the flip side, which is why "focus cannot leave the editor" is the
-		// wrong summary of it: the trap is a property of the caret's BLOCK, not of
-		// the editable surface. Walk the caret up out of the list — three
-		// ArrowUps, past the two other bullets — and the same key is not consumed
-		// at all, because sink-list-item does not apply in a heading, so the
-		// browser's own sequential navigation runs. A paragraph behaves the same;
-		// the Checklist heading is used only because the toolbar reports it, which
-		// is what makes the settle below possible.
-		for (let step = 0; step < 3; step += 1) {
-			await page.keyboard.press('ArrowUp');
-		}
-		// Settle on the TOOLBAR's block-type label rather than on the DOM
-		// selection. The toolbar renders from ProseMirror's own state, which is
-		// also what the Tab keymap runs against; `window.getSelection()` can lead
-		// it by a frame or two under load, and pressing Tab in that window
-		// silently indents a bullet instead of moving focus.
-		await expect.poll(() => blockTypeLabel(page)).toBe('Block type: Heading 2');
-
-		const markdownBefore = await currentMarkdown(page).getAttribute('value');
-		// Focus leaves the component and lands on the sentinel that follows it in
-		// the document. This used to assert `<body>` and then a wrap-around to the
-		// START sentinel, which is what Chromium does when a forward Tab runs off
-		// the end of the page — Firefox hands focus to the browser chrome instead
-		// and the test could no longer see it. Naming the element focus arrived at
-		// is both engine-independent and strictly stronger than asserting it
-		// reached nothing in particular.
-		await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
-		await expect
-			.poll(() => activeDescriptor(page))
-			.toMatchObject({ tag: 'BUTTON', text: 'End of tab order', inEditorMain: false });
-		// Nothing was edited on the way out — unlike the swallowed presses above.
-		expect(await currentMarkdown(page).getAttribute('value')).toBe(markdownBefore);
+		await page.keyboard.press(isMac ? 'Meta+[' : 'Control+[');
+		await expect(currentMarkdown(page)).not.toHaveAttribute(
+			'value',
+			/\n {2}[*-] Document review export behavior/
+		);
 	});
 
-	test('unselected tabs point aria-controls at panels that do not exist (pinned known bug)', async ({
+	test('only the active tab carries aria-controls, and it follows the selection', async ({
 		page
 	}) => {
 		await ready(page);
 
-		// KNOWN BUG, pinned as-is. Each Segment is given the id of the panel it
-		// controls, but only the ACTIVE view's panel is rendered (the view area is
-		// an `{#if}` chain, not three panels with two hidden). So two of the three
-		// tabs always reference an element that is not in the document, and a
-		// screen reader following the relationship finds nothing. The usual fix is
-		// to render all three panels and hide the inactive ones.
-		const resolution = await page.evaluate(() =>
-			[...document.querySelectorAll('[role="tab"]')].map((tab) => ({
-				selected: tab.getAttribute('aria-selected'),
-				controls: tab.getAttribute('aria-controls'),
-				resolves: !!document.getElementById(tab.getAttribute('aria-controls') ?? '')
-			}))
-		);
-		expect(resolution).toEqual([
+		// FIXED. Each Segment used to be given the id of the panel it controls
+		// unconditionally, but only the ACTIVE view's panel is ever rendered (the
+		// view area is an `{#if}` chain, not three panels with two hidden) — so
+		// two of the three tabs always referenced an element that was not in the
+		// document. The fix sets `aria-controls` on the ACTIVE tab only; an
+		// inactive tab now carries no `aria-controls` attribute at all, rather
+		// than a dangling reference to a nonexistent id.
+		const resolution = () =>
+			page.evaluate(() =>
+				[...document.querySelectorAll('[role="tab"]')].map((tab) => ({
+					selected: tab.getAttribute('aria-selected'),
+					controls: tab.getAttribute('aria-controls'),
+					resolves: !!document.getElementById(tab.getAttribute('aria-controls') ?? '')
+				}))
+			);
+		expect(await resolution()).toEqual([
 			{ selected: 'true', controls: `${EDITOR_ID}-editor-panel`, resolves: true },
-			{ selected: 'false', controls: `${EDITOR_ID}-diff-panel`, resolves: false },
-			{ selected: 'false', controls: `${EDITOR_ID}-summary-panel`, resolves: false }
+			{ selected: 'false', controls: null, resolves: false },
+			{ selected: 'false', controls: null, resolves: false }
+		]);
+
+		// …and it MOVES with the selection rather than being a static snapshot of
+		// the initial view: switching tabs hands `aria-controls` to whichever
+		// panel is now actually rendered, and takes it away from the one that was
+		// active a moment ago.
+		await page.getByRole('tab', { name: 'Diff' }).click();
+		await expect.poll(resolution).toEqual([
+			{ selected: 'false', controls: null, resolves: false },
+			{ selected: 'true', controls: `${EDITOR_ID}-diff-panel`, resolves: true },
+			{ selected: 'false', controls: null, resolves: false }
+		]);
+
+		await page.getByRole('tab', { name: 'Summary' }).click();
+		await expect.poll(resolution).toEqual([
+			{ selected: 'false', controls: null, resolves: false },
+			{ selected: 'false', controls: null, resolves: false },
+			{ selected: 'true', controls: `${EDITOR_ID}-summary-panel`, resolves: true }
 		]);
 	});
 
@@ -946,7 +944,7 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		await expect(target).toHaveAttribute('aria-label', 'Comment threads');
 	});
 
-	test('anchored-comment decorations are mouse-only and invisible to assistive tech (pinned known bug)', async ({
+	test('anchored-comment decorations announce themselves and have a keyboard route', async ({
 		page
 	}) => {
 		await ready(page);
@@ -955,16 +953,37 @@ test.describe('review-ssr-and-a11y: keyboard reachability', () => {
 		await expect(anchor).toHaveCount(1);
 		await expect(anchor).toHaveText('Release Plan');
 
-		// KNOWN BUG, pinned as-is. The decoration is built with exactly two
-		// attributes. It has no role, no tabindex, and no `aria-*` of any kind, so
-		// Tab never reaches it (confirmed by the Tab-order walk above, which goes
-		// straight from the editor host to the contenteditable) and a screen
-		// reader gets no signal that this run of text carries a comment thread.
-		// The sidebar list is the only keyboard path to a thread.
+		// FIXED, cinder#1304. The decoration used to be built with exactly two
+		// attributes — `class` and `data-thread-id`, both invisible to assistive
+		// tech. It now also carries `role="mark"` and `aria-description`, the
+		// same job a native `<mark>` would do, without a `<mark>` element
+		// ProseMirror does not render here.
 		const attributes = await anchor.evaluate((element) =>
 			[...element.attributes].map((attribute) => attribute.name).sort()
 		);
-		expect(attributes).toEqual(['class', 'data-thread-id']);
+		expect(attributes).toEqual(['aria-description', 'class', 'data-thread-id', 'role']);
+		await expect(anchor).toHaveAttribute('role', 'mark');
+		await expect(anchor).toHaveAttribute('aria-description', 'Commented text');
+
+		// `role="mark"` deliberately carries no tab stop — an inline decoration
+		// inside a contenteditable fighting ProseMirror's own selection handling
+		// was rejected upstream as fragile — so the fix's keyboard route is a
+		// container-level chord instead: Ctrl+Alt+ArrowDown/Up
+		// (Cmd+Option+ArrowDown/Up on macOS, since Control+Option is VoiceOver's
+		// own modifier prefix there) moves the caret to the next/previous anchor
+		// in document order and opens its thread, the same as clicking the
+		// decoration does. Exercised as a real keypress, not just an attribute
+		// check: click inside the prose (never on the anchor itself, so the
+		// popover below is provably the CHORD's doing) and fire the chord.
+		await page.locator('.ProseMirror').getByText('The first release includes').click();
+		const isMac = await page.evaluate(() => /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+		await page.keyboard.press(isMac ? 'Meta+Alt+ArrowDown' : 'Control+Alt+ArrowDown');
+
+		await expect(page.locator('.thread-popover')).toBeVisible();
+		await expect
+			.poll(() => activeDescriptor(page))
+			.toMatchObject({ tag: 'BUTTON', label: 'Delete thread', inPopover: true });
+		expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Release Plan');
 	});
 });
 
@@ -1012,20 +1031,26 @@ test.describe('review-ssr-and-a11y: the thread popover', () => {
 			.toMatchObject({ tag: 'TEXTAREA', inPopover: true });
 	});
 
-	test('aria-modal is not backed by anything (pinned known bug)', async ({ page }) => {
+	test('the popover is non-modal, and aria-modal no longer claims otherwise', async ({ page }) => {
 		await ready(page);
 		await openThreadPopover(page);
 
 		const popover = page.locator('.thread-popover');
 		await expect(popover).toHaveAttribute('role', 'dialog');
-		await expect(popover).toHaveAttribute('aria-modal', 'true');
 
-		// KNOWN BUG, pinned as-is. `aria-modal="true"` is a promise to assistive
-		// tech that everything outside the dialog is unavailable, and nothing
-		// enforces it: neither the editor region nor the comment sidebar is
-		// `inert` or `aria-hidden` while the popover is open. Tab is trapped (see
-		// above), but a screen reader's own virtual cursor — which does not use
-		// Tab — walks straight out into content the dialog claims is inaccessible.
+		// FIXED, cinder#1305. `aria-modal="true"` is a promise to assistive tech
+		// that everything outside the dialog is unavailable, and nothing backed
+		// it: neither the editor region nor the comment sidebar was ever `inert`
+		// or `aria-hidden` while the popover was open, and F6 landmark
+		// navigation (pinned by 'F6 alternates between the editor and an open
+		// popover' below) has always been able to move focus out regardless —
+		// deliberately, since this popover is non-modal by design. The fix
+		// removes the attribute rather than trying to earn it: it does not make
+		// the popover modal, it stops the popover claiming to be.
+		await expect(popover).not.toHaveAttribute('aria-modal');
+
+		// Still true, and now consistent with what the popover actually claims:
+		// nothing outside it is inert or hidden.
 		const outside = await page.evaluate(() => {
 			const main = document.querySelector('.review-editor-main');
 			const sidebar = document.querySelector('aside.comment-sidebar');
