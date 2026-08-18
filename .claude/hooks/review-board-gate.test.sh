@@ -1219,6 +1219,48 @@ for scope in state-dir tree-wide; do
   rm -rf "$d"
 done
 
+# A transient failure must not let the walk report the FAILED attempt's output.
+# Re-probing readability is not re-enumerating: an earlier version ran a second
+# `find` with its output discarded, so when that probe succeeded the caller kept
+# walk one's partial listing and was told nothing was wrong. A reviewer drove
+# that to a recorded `formatting-only` waiver over a live component, and to two
+# different file bodies hashing identically. This plants real source, fails the
+# first walk of that directory, and asserts the component is STILL seen.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+    match='Evil.svelte'
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    mkdir -p "$d/tmp/parts"
+    printf '%s\n' "$evil" > "$d/tmp/parts/Evil.svelte"
+    match='tmp'
+  fi
+  shimdir=$(mktemp -d) || exit 1
+  realfind=$(command -v find)
+  cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+p0=no
+for a in "\$@"; do [ "\$a" = "-print0" ] && p0=yes; done
+if [ "\$p0" = yes ] && [ ! -f "$shimdir/fired" ]; then
+  : > "$shimdir/fired"; exit 1
+fi
+exec $realfind "\$@"
+SHIM
+  chmod +x "$shimdir/find"
+  err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+  hash=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+  # Either outcome is correct: refuse by name, or hash it. Silence is not.
+  if printf '%s' "$err" | grep -q "$match" || [ -n "$hash" ]; then
+    ok "a transient failure does not report a partial read as nothing ($scope)"
+  else
+    no "a transient failure does not report a partial read as nothing ($scope)" "silent: err=[$err] hash=[$hash]"
+  fi
+  rm -rf "$shimdir" "$d"
+done
+
 # A FORGED `.git` shape must not hide a component. The prune tests for `HEAD`
 # plus `objects/` rather than trusting the name, and both are trivially
 # creatable -- so the shape is forgeable, and a name-only `.git` (which the

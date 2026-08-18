@@ -205,9 +205,15 @@ NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
 # shipped `aria-modal="true"` with no focus trap into the bundle.
 #
 # So the walk stops inferring absence from a short read and asks `find` whether
-# it finished. That covers every ACL variant, every permission shape, and
-# whatever the next one turns out to be, because it tests the thing that
-# actually matters rather than one mechanism that can cause it.
+# it finished. That covers every shape that stops it TRAVERSING -- every mode
+# denial and every ACL variant tried so far -- because it tests the thing that
+# matters rather than one mechanism that can cause it. It does NOT cover a
+# denial on reading a FILE's contents: `find` never opens files, so
+# `chmod +a "<user> deny read"` on one leaves mode bits clean, every exit status
+# 0, and `cat`/`shasum` failing into `2>/dev/null`, which makes two different
+# bodies hash identically. Pre-existing, still open, and recorded in the known
+# gaps rather than left implied by a sentence that once claimed "every
+# permission shape".
 WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
 
 # Prints the first source file hiding inside a PRUNED `.git` directory under
@@ -254,74 +260,63 @@ WALK_PRUNE_CLAUSE=(
        ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \)
 )
 walk_hidden_dir() {
-  local root_dir="$1" count=0 p __ec_file __ec
+  local root_dir="$1" count=0 p __ec __try __buf
   # `./` prefix if relative and not already so: a directory literally named
   # `-lab` passed bare to `find` is parsed as an unknown OPTION FLAG
-  # (`illegal option -- l`), not a path -- stderr swallowed below the same
-  # way an unreadable directory's is, so the whole directory silently
-  # dropped out of the walk with no refusal. `${root_dir#/}` unchanged means
-  # no leading `/` was stripped, i.e. the path was already relative.
+  # (`illegal option -- l`), not a path -- stderr swallowed, so the whole
+  # directory silently dropped out of the walk with no refusal.
   [ "${root_dir#/}" = "$root_dir" ] && root_dir="./$root_dir"
-  # `find`'s exit status, written to a FILE by the producer: `$?` after
-  # `done < <(...)` reads the WHILE loop's status, not the substituted
-  # command's, and a variable assigned inside a process substitution does not
-  # survive it -- the same trap `add_ignored_tracked` documents one function
-  # down, and the reason it also uses a file.
-  __ec_file=$(mktemp 2>/dev/null) || { printf '%s\n' "$WALK_UNREADABLE_SENTINEL"; return 0; }
+
+  # BUFFERED, then emitted, and this is the point. An earlier version streamed
+  # the walk and, on a non-zero status, ran a second `find` as a readability
+  # PROBE whose output went to /dev/null -- so when the retry succeeded the
+  # caller kept walk ONE's partial output and was told nothing was wrong. A
+  # reviewer drove that to a recorded `formatting-only` waiver over a live
+  # component, and to two different file bodies hashing identically. Re-probing
+  # readability is not the same as re-enumerating; only the output of a walk
+  # that actually finished may be used.
+  #
+  # Two attempts, because a directory removed mid-descent also makes `find`
+  # exit non-zero and this repo ignores `test-results/`, which Playwright churns
+  # throughout a run. Churn clears on a re-read; a permission denial does not
+  # (measured: `chmod 000` exits 1 twice running, a vanished directory exits 0
+  # on the retry). Buffering costs the cap's worth of paths, which is bounded by
+  # construction at WALK_HIDDEN_CAP.
+  for __try in 1 2; do
+    __buf=$(mktemp 2>/dev/null) || { printf '%s\n' "$WALK_UNREADABLE_SENTINEL"; return 0; }
+    find -L "$root_dir" -maxdepth 12 \( "${WALK_PRUNE_CLAUSE[@]}" \) -prune -o \
+      -type f -print0 2>/dev/null > "$__buf"
+    __ec=$?
+    [ "$__ec" = "0" ] && break
+    rm -f "$__buf" 2>/dev/null
+    __buf=""
+  done
+  if [ -z "$__buf" ]; then
+    printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
+    return 0
+  fi
+
   while IFS= read -r -d '' p; do
     [ -z "$p" ] && continue
     case "$p" in
       *$'\n'*)
         printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
-        rm -f "$__ec_file" 2>/dev/null
+        rm -f "$__buf" 2>/dev/null
         return 0
         ;;
     esac
     is_artifact "$p" && continue
     count=$((count + 1))
     # A terminal sentinel LINE, not a variable: this runs inside `$( )` at every
-    # call site, so stdout is the only channel out. Six separate bugs in this
-    # file came from smuggling a non-filename property through it or re-deriving
-    # it in the caller; the sentinel is that property travelling as data.
+    # call site, so stdout is the only channel out.
     if [ "$count" -gt "$WALK_HIDDEN_CAP" ]; then
       printf '%s\n' "$WALK_TRUNCATED_SENTINEL"
-      rm -f "$__ec_file" 2>/dev/null
+      rm -f "$__buf" 2>/dev/null
       return 0
     fi
     printf '%s\n' "$p"
-  done < <({ find -L "$root_dir" -maxdepth 12 \
-    \( \( -name .git -a -exec test -e '{}/HEAD' -a -d '{}/objects' ';' \) \
-       -o \( \( -name node_modules -o -name .svelte-kit \) \
-         ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \) \) -prune -o \
-    -type f -print0 2>/dev/null; printf '%s' "$?" > "$__ec_file"; } | LC_ALL=C sort -z)
-  # Terminal, like the other two: emitted AFTER the paths so a caller that reads
-  # the walk for content still gets everything find managed to see, and the
-  # refusal rides out on the same channel.
-  __ec=$(cat "$__ec_file" 2>/dev/null)
-  rm -f "$__ec_file" 2>/dev/null
-  if [ "${__ec:-1}" != "0" ]; then
-    # A RETRY PROBE, not the status alone. `find`'s exit status answers "did I
-    # finish", which is a strictly larger set than "could I read": a directory
-    # removed while it was descending also makes it exit non-zero, and this
-    # repo's own `.gitignore` lists `test-results/`, which Playwright creates
-    # and destroys throughout a run. Refusing on the bare status made the gate
-    # DENY 3/3 against a churning tree where it had allowed 3/3 before, with a
-    # message telling the reader to hunt an ACL that was not there -- the
-    # unactionable livelock this whole task exists to remove, reintroduced by
-    # its own fix.
-    #
-    # Churn clears on a re-read and a permission denial does not; measured, a
-    # `chmod 000` subdirectory exits 1 twice running while a vanished one exits
-    # 0 on the retry. The probe discards output, so this costs one extra walk
-    # only on the failing path.
-    if ! find -L "$root_dir" -maxdepth 12 \
-        \( \( -name .git -a -exec test -e '{}/HEAD' -a -d '{}/objects' ';' \) \
-           -o \( \( -name node_modules -o -name .svelte-kit \) \
-             ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \) \) -prune -o \
-        -type f -print0 >/dev/null 2>&1; then
-      printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
-    fi
-  fi
+  done < <(LC_ALL=C sort -z < "$__buf")
+  rm -f "$__buf" 2>/dev/null
 }
 
 # True for a path inside a build artifact directory. A single left-to-right
@@ -607,39 +602,37 @@ state_dir_hides_source() {
     return 0
   fi
 
-  # Collected rather than returned from inside the loop, so `find`'s exit status
-  # is still read on every path. A hit outranks an incomplete read -- naming the
-  # file is strictly more actionable than naming the directory -- but an
-  # incomplete read with NO hit must never be reported as "nothing here", which
-  # is the whole failure this function exists to refuse.
-  local __p __hit="" __ec_file __ec
-  __ec_file=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
+  # BUFFERED and retried, exactly like walk_hidden_dir, and for the reason that
+  # function's comment gives: an earlier version re-probed readability while
+  # keeping the FAILED walk's output, so one transient failure over a live
+  # `Evil.svelte` in this directory reported nothing, flipped the gate from deny
+  # to allow, and let `--grounds formatting-only` be recorded. Only the output
+  # of a walk that finished may be used.
+  local __p __hit="" __try __buf
+  for __try in 1 2; do
+    __buf=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
+    find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 2>/dev/null > "$__buf"
+    [ $? = 0 ] && break
+    rm -f "$__buf" 2>/dev/null
+    __buf=""
+  done
+  if [ -z "$__buf" ]; then
+    printf 'unreadable:%s\n' "$STATE_DIR"
+    return 0
+  fi
   while IFS= read -r -d '' __p; do
     [ -z "$__p" ] && continue
     [ -n "$__hit" ] && continue
-    # A newline in the name cannot be reported as one line, and reporting the
+    # A newline in the name cannot be reported as one line, and naming the
     # directory instead keeps the refusal true where naming the file would
     # corrupt it -- the same trade the walk sentinels make.
     case "$__p" in
       *$'\n'*) __hit="newline:$STATE_DIR"; continue ;;
     esac
     if is_source "$__p"; then __hit="source:$__p"; fi
-  done < <({ find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 2>/dev/null; printf '%s' "$?" > "$__ec_file"; })
-  __ec=$(cat "$__ec_file" 2>/dev/null)
-  rm -f "$__ec_file" 2>/dev/null
-  if [ -n "$__hit" ]; then printf '%s\n' "$__hit"; return 0; fi
-  # Neither mode bits nor access(2) sees an ACL that denies `readattr`: `find`
-  # cannot classify the entry, so `-type d` never names the directory for the
-  # loop above to test and `-type f` never descends. Asking find whether it
-  # finished is the only probe that catches it.
-  # Same retry probe as walk_hidden_dir, and for the same reason: a non-zero
-  # status means "did not finish", which churn produces as readily as a
-  # permission denial. Only a failure that survives a re-read is a refusal.
-  if [ "${__ec:-1}" != "0" ]; then
-    if ! find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 >/dev/null 2>&1; then
-      printf 'unreadable:%s\n' "$STATE_DIR"
-    fi
-  fi
+  done < "$__buf"
+  rm -f "$__buf" 2>/dev/null
+  [ -n "$__hit" ] && { printf '%s\n' "$__hit"; return 0; }
   return 0
 }
 

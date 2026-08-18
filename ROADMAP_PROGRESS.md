@@ -547,6 +547,16 @@ this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `out
 `.svg`, which was in `IS_SOURCE_EXT` only and so waivable outside `src/` despite carrying `role`
 and `aria-label`.
 
+**Two gaps this campaign found and did not close, recorded rather than implied.** A macOS ACL
+denying `read` on a FILE is invisible to every guard here: mode bits stay clean, `find` never opens
+files so every exit status is 0, and `cat`/`shasum` fail into `2>/dev/null` — so two different
+bodies of the same file hash identically with no refusal. Pre-existing, and the reason it is
+recorded rather than fixed is that closing it means reading every hidden file's bytes through a
+path that can fail, which is a different design from the one this campaign hardened. Separately,
+the file-read `-perm` arm is now the only mechanism-based permission test left in the file, and it
+is exactly the kind an ACL defeats — which is the argument that justified deleting its siblings,
+pointing back at it.
+
 **Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no _depth_ probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on. It does now have its own readability refusal; an earlier version of this sentence said otherwise and was measured false.
 
 **A methodology rule this cost three rounds to learn.** A suite number measured inside the shared session scratchpad is untrustworthy unless the runner hashes the hooks before and after the run. Reviewers work concurrently and pick colliding directory names; one caught a peer mid-run with `ps` and matched the file it was seeing to the artifact of its own mutation. A timed-out sweep in the main session also left a mutation in the real tree, caught only by a hash check afterwards. Every figure in the table above comes from a run whose start and end state were hash-verified.
