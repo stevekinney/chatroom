@@ -475,11 +475,15 @@ after a background sweep writing `work-hash.sh` concurrently with a foreground e
 **All 54 are reddened by at least one of those**, computed rather than asserted: the union of every
 mutation's failing-assertion names, normalised for the per-run `mktemp` paths two pre-existing
 probes embed in their own names, contains all 54. Earlier versions of this sentence claimed
-coverage a reviewer then disproved, twice. Three rows exist only because redundancy would otherwise
-hold a probe green — the `.signoff` row for the bookkeeping probe, the over-refusal row for "a
-genuinely absent state dir does not provoke a refusal" (no other mutation reaches it, since every
-other one makes the guard refuse _less_), and the four commit-checkout rows, which measure what
-each successive design actually missed rather than what its author believed it caught.
+coverage a reviewer then disproved, twice. Two rows exist only because redundancy would otherwise
+hold a probe green: the over-refusal row for "a genuinely absent state dir does not provoke a
+refusal" (no other mutation reaches it, since every other one makes the guard refuse _less_), and
+the `${#__deny[@]}` row. A reviewer's own union found only three rows uniquely necessary — those
+two plus `containment reversed` — and specifically that the `.signoff` row is _not_ uniquely
+necessary for the bookkeeping probe, which the over-refusal row also reddens as collateral. An
+earlier version of this sentence said "three rows" and then enumerated six, bundling the four
+commit-checkout rows under a rationale that is not theirs: those measure what each successive
+design actually missed rather than what its author believed it caught.
 
 **Four claims this record made confidently and wrongly**, each caught by a reviewer, kept because the pattern is the lesson:
 

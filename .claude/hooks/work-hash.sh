@@ -209,6 +209,50 @@ NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
 # whatever the next one turns out to be, because it tests the thing that
 # actually matters rather than one mechanism that can cause it.
 WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
+
+# Prints the first source file hiding inside a PRUNED `.git` directory under
+# $1, or nothing.
+#
+# The prune tests whether a directory IS a repository -- `HEAD` plus `objects/`
+# -- rather than trusting its name, which is a weaker test than it looks: both
+# entries are trivially creatable, so `mkdir -p x/.git/objects && echo ref: > \
+# x/.git/HEAD` forges the shape, and a `role="dialog"` parked beside them was
+# dropped by the prune while `is_artifact` would have KEPT it. That is the same
+# prune-versus-classifier disagreement the name-only prune had; narrowing the
+# domain did not remove it, because shape is no more evidence about content than
+# a name is.
+#
+# So the prune stays -- a real repository's internals are genuinely not review
+# material, and walking them would blow the file cap -- and what it drops is
+# scanned for source instead. Refusing by name is the fail-closed answer and the
+# actionable one, exactly as it is for the state directory.
+pruned_git_source() {
+  local __root="$1" __g __hit
+  [ -d "$__root" ] || return 0
+  while IFS= read -r -d '' __g; do
+    __hit=$(find -L "$__g" -maxdepth 12 -type f -print0 2>/dev/null \
+      | while IFS= read -r -d '' __f; do is_source "$__f" && { printf '%s' "$__f"; break; }; done)
+    if [ -n "$__hit" ]; then printf '%s\n' "$__hit"; return 0; fi
+  done < <(find -L "$__root" -maxdepth 12 -name .git -type d -print0 2>/dev/null)
+  return 0
+}
+
+# THE ONE PRUNE CLAUSE. Every walk and every probe that claims to bound the same
+# tree uses this array, because the alternative was tried: the clause was
+# spelled twice, a comment asserted the two matched, and narrowing one arm made
+# that assertion false without touching the comment.
+#
+# The `.git` arm tests whether the directory IS a repository -- `HEAD` plus an
+# `objects/` directory -- rather than trusting its name, and that is a WEAKER
+# test than it looks: both entries are trivially creatable, so the shape can be
+# forged. It is paired with a source scan of whatever it prunes (see
+# pruned_git_source), because a prune that drops content while `find` exits 0 is
+# a fail-open however the decision was reached.
+WALK_PRUNE_CLAUSE=(
+  \( -name .git -a -exec test -e '{}/HEAD' -a -d '{}/objects' ';' \)
+  -o \( \( -name node_modules -o -name .svelte-kit \)
+       ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \)
+)
 walk_hidden_dir() {
   local root_dir="$1" count=0 p __ec_file __ec
   # `./` prefix if relative and not already so: a directory literally named
@@ -525,35 +569,39 @@ state_dir_hides_source() {
   # alike, so it is a property of `-maxdepth` rather than of one binary. Only
   # `readattr` survives there, because classifying an entry for `-type f` needs
   # a stat. This walk goes one level deeper and therefore does open it.
-  local __dec_file __dec
+  # ONE walk, both depths derived from its own output by counting separators.
+  # Two sequential walks counting a moving tree is a race, and re-running both
+  # on a mismatch just re-rolls the same dice: against a Playwright-shaped
+  # writer in an ignored directory only four segments deep, a reviewer measured
+  # 25 false "nests deeper" refusals out of 25 at sustained write rate -- the
+  # unactionable livelock CHR-19 exists to remove, restored at 100% by the fix
+  # meant to close it. One walk cannot disagree with itself.
+  #
+  # The walk goes one level PAST the bound, which is also the only walk that
+  # opens a directory sitting at exactly the bound -- `find` never opens one at
+  # `-maxdepth`, so a denial that blocks only descent exits 0 there. Its status
+  # answers both questions.
+  local __dec_file __dec __deepest
   __dec_file=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
-  __d_in=$(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -print 2>/dev/null | wc -l)
-  __d_out=$({ find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print 2>/dev/null; printf '%s' "$?" > "$__dec_file"; } | wc -l)
+  __deepest=$({ find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print 2>/dev/null; printf '%s' "$?" > "$__dec_file"; } \
+    | awk -v root="$STATE_DIR" 'BEGIN{m=0} {n=gsub("/","/"); if (n>m) m=n} END{print m}')
   __dec=$(cat "$__dec_file" 2>/dev/null)
   rm -f "$__dec_file" 2>/dev/null
   if [ "${__dec:-1}" != "0" ]; then
-    # Same churn discriminator as below: only a failure that survives a re-read
-    # is a refusal.
     if ! find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print >/dev/null 2>&1; then
       printf 'unreadable:%s\n' "$STATE_DIR"
       return 0
     fi
   fi
-  if [ "$__d_out" -gt "$__d_in" ]; then
-    # RE-MEASURED before refusing. The two counts are taken by two separate
-    # walks, so anything that changes the tree between them -- churn, or a
-    # transient failure that empties one of the two -- makes them disagree for a
-    # reason that has nothing to do with depth, and the refusal that follows
-    # tells the reader to flatten a directory that is not deep. Measured at both
-    # revisions by two reviewers as an intermittent false refusal, and
-    # reproduced deterministically here by failing the first walk only.
-    __d_in=$(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -print 2>/dev/null | wc -l)
-    __d_out=$(find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print 2>/dev/null | wc -l)
-    if [ "$__d_out" -gt "$__d_in" ]; then
-      printf 'deep:%s\n' "$STATE_DIR"
-      return 0
-    fi
+  # The root itself contributes its own separators, so the bound is measured
+  # relative to it rather than absolutely.
+  local __root_seps
+  __root_seps=$(printf '%s' "$STATE_DIR" | awk '{print gsub("/","/")}')
+  if [ "$((__deepest - __root_seps))" -gt "$STATE_DIR_MAX_DEPTH" ]; then
+    printf 'deep:%s\n' "$STATE_DIR"
+    return 0
   fi
+
   # Collected rather than returned from inside the loop, so `find`'s exit status
   # is still read on every path. A hit outranks an incomplete read -- naming the
   # file is strictly more actionable than naming the directory -- but an
@@ -852,7 +900,19 @@ report_symlink_escape() {
 # no such backstop.
 renders() {
   local p pattern
-  p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  # Leading `./` stripped, because `walk_hidden_dir` adds one to every path it
+  # emits (the dash-prefix fix) and `waiver_forbidden_paths` feeds those paths
+  # straight in here. The `src/` and `static/` PREFIX arms therefore matched
+  # nothing that came from a walk: `renders 'src/routes/x/+page.ts'` answered
+  # forbidden while `renders './src/routes/x/+page.ts'` answered waivable. With
+  # this repo's own unanchored `tmp/` ignore rule, two brand-new SvelteKit load
+  # functions under `src/routes/tmp/` -- one of them turning SSR off -- recorded
+  # a `--grounds formatting-only` waiver with no reviewer. `.svelte` survived on
+  # its suffix arm; `.ts`, `.js`, `.json` and every `static/` asset did not.
+  # Normalised HERE rather than at the call sites, for the same reason
+  # `is_source` lowercases here: three call sites, and only some would remember.
+  p="${1#./}"
+  p=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
   for pattern in "${WAIVER_NEVER[@]}"; do
     case "$pattern" in
       */) case "$p" in "$pattern"*) return 0 ;; esac ;;
@@ -1234,8 +1294,15 @@ compute_work_hash() {
   # exceed it today) or containing one unreadable file bricked the gate with
   # "flatten it", even though walk_hidden_dir prunes node_modules/.svelte-kit
   # entirely and would never have descended there.
-  local __prune_clause=(-path '*/.git' -o \( \( -name node_modules -o -name .svelte-kit \) \
-    ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \))
+  # WALK_PRUNE_CLAUSE, not a third copy. This was spelled out here as well as
+  # in walk_hidden_dir, with a comment promising the two matched -- and when the
+  # walk's `.git` arm was narrowed to real repositories, this copy kept the bare
+  # `-path '*/.git'` and the promise silently became false. A component parked
+  # under a `.git`-NAMED directory past the depth bound was then pruned by these
+  # probes and cut off by the walk's own `-maxdepth`, so neither looked and
+  # neither refused. Verbatim the lesson `ignore_source_is_external` records
+  # about being written three times and ordered correctly twice.
+  local __prune_clause=("${WALK_PRUNE_CLAUSE[@]}")
   while IFS= read -r __hidden_dir; do
     [ -z "$__hidden_dir" ] && continue
     if [ "$__hidden_dir" = "$NEWLINE_IN_PATH_SENTINEL" ]; then
@@ -1274,31 +1341,34 @@ compute_work_hash() {
     # tree reaches (at least) depth 13 -- an ancestor DIRECTORY of anything
     # deeper still is itself present there, so this needs no -type filter to
     # catch trees that go past depth 13.
-    local __d12 __d13
-    __d12=$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-        -maxdepth 12 -print 2>/dev/null | wc -l)
-    # Status captured for the same reason as the state-dir twin: this deeper
-    # walk is the only one that opens a directory sitting at exactly the
-    # shallower bound, so it is the only one that can see a denial there.
-    local __d13ec_file __d13ec
+    # ONE walk, both answers from its own output: the deepest path it saw, and
+    # whether it finished. Two sequential counts of a moving tree race, and
+    # re-measuring on a mismatch just re-rolls the same dice -- a reviewer
+    # measured 25 false "nests deeper" refusals out of 25 against a
+    # Playwright-shaped writer in an ignored directory only four segments deep,
+    # on this repo's own gitignored `test-results/`. That is the unactionable
+    # livelock CHR-19 exists to remove, restored at 100% by the fix meant to
+    # close it. One walk cannot disagree with itself.
+    #
+    # The walk goes one level PAST the bound, which is also the only walk that
+    # opens a directory sitting at exactly the bound -- `find` never opens one
+    # there, so a denial blocking only descent exits 0. Its status answers that.
+    local __d13ec_file __d13ec __deepest __root_seps
     __d13ec_file=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a temporary file"; return 1; }
-    __d13=$({ find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-        -maxdepth 13 -print 2>/dev/null; printf '%s' "$?" > "$__d13ec_file"; } | wc -l)
+    __deepest=$({ find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
+        -maxdepth 13 -print 2>/dev/null; printf '%s' "$?" > "$__d13ec_file"; } \
+      | awk 'BEGIN{m=0} {n=gsub("/","/"); if (n>m) m=n} END{print m}')
     __d13ec=$(cat "$__d13ec_file" 2>/dev/null)
     rm -f "$__d13ec_file" 2>/dev/null
-    if [ "$__d13" -gt "$__d12" ]; then
-      # Re-measured before refusing, for the same reason as the state-dir twin:
-      # two separate walks disagree under churn as readily as under real depth,
-      # and "flatten it" is unactionable advice about a directory that is not
-      # deep.
-      __d12=$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-          -maxdepth 12 -print 2>/dev/null | wc -l)
-      __d13=$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-          -maxdepth 13 -print 2>/dev/null | wc -l)
-      if [ "$__d13" -gt "$__d12" ]; then
-        WORK_ERROR="${__hidden_dir} nests deeper than this gate walks, so it cannot tell whether work hides down there. Flatten it, or move that content out of the work tree."
-        return 1
-      fi
+    # Trailing slashes stripped first: `git status --ignored=matching` reports a
+    # collapsed directory as `tmp/`, so the root carries one more separator than
+    # its paths imply and every depth came out one too shallow -- a component at
+    # exactly the bound+1 stopped refusing. Caught by the pre-existing depth
+    # probe going red, which is what it is for.
+    __root_seps=$(printf '%s' "${__hidden_dir%"${__hidden_dir##*[!/]}"}" | awk '{print gsub("/","/")}')
+    if [ "$((__deepest - __root_seps))" -gt 12 ]; then
+      WORK_ERROR="${__hidden_dir} nests deeper than this gate walks, so it cannot tell whether work hides down there. Flatten it, or move that content out of the work tree."
+      return 1
     fi
     if [ -n "$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
         -type d \( ! -perm -u+r -o ! -perm -u+x \) -print -quit 2>/dev/null)" ] ||
@@ -1317,6 +1387,13 @@ compute_work_hash() {
     if [ "${__d13ec:-1}" != "0" ] && \
        ! find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o -maxdepth 13 -print >/dev/null 2>&1; then
       WORK_ERROR="${__hidden_dir} could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
+      return 1
+    fi
+    # What the prune dropped, scanned rather than trusted. See pruned_git_source.
+    local __pg
+    __pg=$(pruned_git_source "$__hidden_dir")
+    if [ -n "$__pg" ]; then
+      WORK_ERROR="${__pg} is source inside a pruned .git directory, which this gate does not walk and cannot review. A repository's own internals are not review material; anything else must not live behind that name. Move it into the tree."
       return 1
     fi
     __walk_out=$(walk_hidden_dir "$__hidden_dir")
@@ -1444,7 +1521,16 @@ compute_work_hash() {
                 [ "$inner" = "$WALK_TRUNCATED_SENTINEL" ] && continue
                 [ "$inner" = "$NEWLINE_IN_PATH_SENTINEL" ] && continue
                 [ "$inner" = "$WALK_UNREADABLE_SENTINEL" ] && continue
-                if is_hashable "$inner"; then printf 'externally-hidden:%s\n' "$inner"
+                # SIZE on the name line, because the bodies below are
+                # concatenated by `xargs -0 cat` with no separator and the name
+                # lines carry no length. Two adjacent files in `LC_ALL=C` order
+                # could therefore trade content across their boundary -- one
+                # emptied, the other holding a `role="dialog"` with no focus
+                # trap -- and hash identically, so a four-PASS sign-off on the
+                # first state cleared the second. Batching is kept (a `cat` per
+                # file cost 1.7s at 600 files); one `wc -c` per file is cheap by
+                # comparison and makes the boundary part of the hashed stream.
+                if is_hashable "$inner"; then printf 'externally-hidden:%s:%s\n' "$inner" "$(wc -c < "$inner" 2>/dev/null | tr -d ' ')"
                 else printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(shasum -a 256 < "$inner" 2>/dev/null | cut -d' ' -f1)"
                 fi
               done
@@ -1732,6 +1818,10 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
             # on that coincidence. The sentinel travels through instead, same
             # as compute_work_hash's enumeration, and is checked once this
             # subshell exits (see below) -- WORK_ERROR set in here is discarded.
+            # Same pruned-`.git` scan the hash path makes, emitted as a path so
+            # WAIVER_NEVER can judge it. Repeated rather than inherited, for the
+            # reason the state-dir guard is: the waiver half is the live half.
+            pruned_git_source "$f"
             walk_hidden_dir "$f"
           else printf '%s\n' "$f"
           fi

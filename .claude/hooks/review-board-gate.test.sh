@@ -832,13 +832,15 @@ done
 # the refusal, which a review round measured as decorative -- the guard fires
 # identically with and without it. That rationale is real, but it belongs to the
 # `:(exclude)` probe further down, where it IS load-bearing. Bounding the walk
-# to `-maxdepth 1` reddens this probe, the nine artifact shapes below it, and
-# the two state-dir readability probes -- twelve in all, matching
-# ROADMAP_PROGRESS.md's table. This figure has been wrong twice: first "this
-# probe alone", then "ten", the latter true only until readability detection
-# moved onto this same bounded walk. Attributing a mutation to the set it
-# reddens is what this suite's discipline rests on, and a number that drifts
-# when the code moves is why the table is re-measured whole, never patched.
+# to `-maxdepth 1` reddens this probe and the nine artifact shapes below it --
+# ten, measured. The figure has been wrong three times here: "this probe alone",
+# then "ten" (correct), then "twelve", the last written on the reasoning that
+# readability detection had moved onto this walk. It had not: readability is
+# carried by the DEPTH-probe walk's exit status, which this mutation does not
+# touch, so no readability probe can redden from it. Two reviewers measured ten
+# independently and the correction was made by re-running the mutation, not by
+# reasoning about it again -- which is the whole point, since every wrong
+# version here was produced by reasoning.
 d=$(new_repo) || exit 1
 mkdir -p "$d/.claude/.review-board-state/signoffs"
 printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
@@ -1216,6 +1218,59 @@ for scope in state-dir tree-wide; do
   fi
   rm -rf "$d"
 done
+
+# A FORGED `.git` shape must not hide a component. The prune tests for `HEAD`
+# plus `objects/` rather than trusting the name, and both are trivially
+# creatable -- so the shape is forgeable, and a name-only `.git` (which the
+# prune correctly walks) is the control that proves the probe is testing the
+# forged case rather than the easy one. `is_artifact` would KEEP these paths, so
+# the prune and the classifier disagree, and a disagreement that drops content
+# is a fail-open however the decision was reached.
+for shape in forged real name-only; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/tmp/parts/.git"
+  case "$shape" in
+    forged) mkdir -p "$d/tmp/parts/.git/objects"; printf 'ref: refs/heads/main\n' > "$d/tmp/parts/.git/HEAD" ;;
+    real)   git init -q --bare "$d/tmp/parts/.git" >/dev/null 2>&1 ;;
+    name-only) : ;;
+  esac
+  printf '%s\n' "$evil" > "$d/tmp/parts/.git/Modal.svelte"
+  err=$(we "$d"); errw=$(wf "$d")
+  if printf '%s' "$err" | grep -q 'Modal.svelte'; then
+    ok "a component behind a .git prune refuses by name ($shape)"
+  else
+    no "a component behind a .git prune refuses by name ($shape)" "got [$err]"
+  fi
+  # The waiver half separately, because it is the live half.
+  if [ "$shape" = forged ]; then
+    if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+      no "a component behind a forged .git is not waivable" "waiver was accepted"
+    else
+      ok "a component behind a forged .git is not waivable"
+    fi
+  fi
+  rm -rf "$d"
+done
+
+# `renders()` is fed paths straight out of `walk_hidden_dir`, which prefixes
+# every one with `./`. Its `src/`/`static/` PREFIX arms therefore matched
+# nothing that came from a walk, so two brand-new SvelteKit load functions under
+# an ignored `src/routes/tmp/` -- one turning SSR off -- recorded a
+# `formatting-only` waiver with no reviewer. `.svelte` survived on its suffix
+# arm; `.ts`, `.js`, `.json` and every `static/` asset did not, which is why
+# this probe uses a load function rather than a component.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/routes/tmp"
+printf 'export const ssr = false;\nexport function load() { return {}; }\n' \
+  > "$d/src/routes/tmp/+page.server.ts"
+if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+  no "a load function in an ignored src/ directory is not waivable" "waiver was accepted"
+else
+  ok "a load function in an ignored src/ directory is not waivable"
+fi
+rm -rf "$d"
 
 # The retry probe that separates CHURN from an unreadable tree. `find`'s exit
 # status answers "did I finish", which is a strictly larger set than "could I
