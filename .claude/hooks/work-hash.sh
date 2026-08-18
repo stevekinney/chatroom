@@ -210,7 +210,6 @@ NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
 # matters rather than one mechanism that can cause it. A file-content denial is
 # distinct: `find` never opens files, so the reads below must report failure.
 WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
-FILE_UNREADABLE_SENTINEL='__FILE_UNREADABLE__'
 
 # Prints the first source file hiding inside a PRUNED `.git` directory under
 # $1, or nothing.
@@ -1428,7 +1427,8 @@ compute_work_hash() {
     fi
   done <<< "$(ignored_matching_paths . "${WORK_DENY[@]}")"
 
-  local externally_hidden
+  local externally_hidden file_unreadable
+  file_unreadable=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a file-read status marker"; return 1; }
   externally_hidden=$(
     ignored_matching_paths . "${WORK_DENY[@]}" \
       ':(exclude)node_modules' ':(exclude).svelte-kit' ':(exclude)dist' ':(exclude)build' \
@@ -1524,24 +1524,24 @@ compute_work_hash() {
                 # first state cleared the second. The content read is checked
                 # explicitly, so an ACL-denied body cannot hash as empty.
                 if is_hashable "$inner"; then
-                  __size=$(wc -c < "$inner" 2>/dev/null) || { printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; continue; }
+                  __size=$(wc -c < "$inner" 2>/dev/null) || { printf 1 > "$file_unreadable"; continue; }
                   printf 'externally-hidden:%s:%s\n' "$inner" "$(printf '%s' "$__size" | tr -d ' ')"
                 else
-                  __blob=$(shasum -a 256 < "$inner" 2>/dev/null) || { printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; continue; }
+                  __blob=$(shasum -a 256 < "$inner" 2>/dev/null) || { printf 1 > "$file_unreadable"; continue; }
                   printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(printf '%s' "$__blob" | cut -d' ' -f1)"
                 fi
               done
               printf '%s\n' "$__names" | while IFS= read -r inner; do
                 [ -n "$inner" ] && [ "$inner" != "$WALK_UNREADABLE_SENTINEL" ] \
                   && [ "$inner" != "$WALK_TRUNCATED_SENTINEL" ] && [ "$inner" != "$NEWLINE_IN_PATH_SENTINEL" ] \
-                  && is_hashable "$inner" && { cat -- "$inner" 2>/dev/null || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; }
+                  && is_hashable "$inner" && { cat -- "$inner" 2>/dev/null || printf 1 > "$file_unreadable"; }
               done
             elif [ -e "$f" ] && ! is_artifact "$f"; then
               if is_hashable "$f"; then
                 printf 'externally-hidden:%s\n' "$f"
-                cat -- "$f" 2>/dev/null || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"
+                cat -- "$f" 2>/dev/null || printf 1 > "$file_unreadable"
               else
-                __blob=$(shasum -a 256 < "$f" 2>/dev/null) || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"
+                __blob=$(shasum -a 256 < "$f" 2>/dev/null) || printf 1 > "$file_unreadable"
                 [ -n "${__blob:-}" ] && printf 'externally-hidden-blob:%s:%s\n' "$f" \
                   "$(printf '%s' "$__blob" | cut -d' ' -f1)"
               fi
@@ -1557,10 +1557,12 @@ compute_work_hash() {
     WORK_ERROR="an ignored directory could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
     return 1
   fi
-  if printf '%s' "$externally_hidden" | grep -qxF "$FILE_UNREADABLE_SENTINEL"; then
+  if [ -s "$file_unreadable" ]; then
+    rm -f "$file_unreadable" 2>/dev/null
     WORK_ERROR="an ignored file could not be read, so this gate cannot tell whether reviewable content hides in it. Fix its permissions, or move it out of the work tree."
     return 1
   fi
+  rm -f "$file_unreadable" 2>/dev/null
 
   # --no-ext-diff --no-textconv on every diff below: a diff driver rewrites the
   # rendered output this hash is built from, and a textconv driver omits changed
