@@ -33,8 +33,10 @@
 #
 # One more known gap: the waiver-side newline refusal in `waiver_forbidden_
 # paths` (work-hash.sh, mirroring the gate-side sentinel) has no probe of
-# its own -- both newline probes in this file drive `compute_work_hash`
-# directly. Confirmed NOT a fail-open (deleting just that arm still refuses,
+# its own -- three probes in this file now exercise a newline, and the
+# state-dir one added for CHR-19 drives `waiver_forbidden_paths` too, but
+# deleting only the waiver-side arm still leaves the suite fully green, so
+# the gap is unchanged. Confirmed NOT a fail-open (deleting just that arm still refuses,
 # via `compute_work_hash` running after `waiver_forbidden_paths` clears in
 # `review-board-signoff.sh`, just with a `Cannot sign off:` prefix instead
 # of `Cannot waive:`), so this is a coverage gap behind a probed guard, not
@@ -64,6 +66,10 @@ assert_sandbox() {
   esac
   printf '%s\n' "$real"
 }
+# The state directory path, spelled once for probes that drive work-hash.sh's
+# refusal formatter directly rather than through a fixture.
+STATE_DIR_PROBE='.claude/.review-board-state'
+
 pass=0
 fail=0
 
@@ -744,6 +750,750 @@ else
 fi
 rm -rf "$d"
 
+# The IN-TREE half of the same hazard, which the guard above deliberately does
+# not cover. `WORK_DENY` is passed to `ignored_matching_paths` at all three of
+# its call sites and, until `path_is_denied` existed, did nothing whatsoever for
+# the state DIRECTORY: git honors `:(exclude)` for an individually-named file
+# and reports a collapsed ignored directory whole regardless of the pathspec
+# (all three spellings -- bare, trailing slash, `/**`). The bookkeeping the
+# sign-off flow actually writes there must never move the hash, or recording a
+# sign-off invalidates the sign-off just recorded.
+#
+# REDUNDANTLY GUARDED, and stated as such rather than counted among the probes a
+# single mutation reddens: `path_is_denied` drops the path AND `is_source`
+# rejects `.signoff`, so either alone keeps this green. It is a regression guard
+# for the historical self-invalidating sign-off, not evidence about this change.
+# Falsifiable, which is the part that matters -- pre-fix work-hash.sh with
+# `.signoff` added to IS_SOURCE_EXT reddens it -- so it is a real property pin
+# rather than an assertion that cannot fail.
+#
+# Asserts the RELATION, not a digest: hash values are tree-specific and no
+# literal would reproduce anywhere else. `h1` is nonempty because the
+# `.gitignore` commit lands AFTER new_repo's `--initialize`, so it is itself
+# work in flight against the baseline -- deliberately NOT re-initialized here,
+# since an empty `h1` would let a double-failure pass as `"" = ""`.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+wh() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"'); }
+we() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"'); }
+wf() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; waiver_forbidden_paths; echo "$WORK_ERROR"'); }
+h1=$(wh "$d")
+printf 'x\n' > "$d/.claude/.review-board-state/round.signoff"
+h2=$(wh "$d")
+# A REWRITE too, not just the create: the original finding moved the hash on
+# both, and a filter that only skipped new paths would pass the create alone.
+printf 'y\n' > "$d/.claude/.review-board-state/round.signoff"
+h3=$(wh "$d")
+# One level down, in the directory the sign-offs themselves live in -- the walk
+# enumerates recursively, so a filter applied to the collapsed top-level entry
+# only would still let this through.
+mkdir -p "$d/.claude/.review-board-state/signoffs"
+printf 'z\n' > "$d/.claude/.review-board-state/signoffs/deep.signoff"
+h4=$(wh "$d")
+if [ -z "$h1" ]; then
+  no "the board's own bookkeeping does not move the hash" "h1 was empty; the fixture proves nothing"
+elif [ "$h1" = "$h2" ] && [ "$h1" = "$h3" ] && [ "$h1" = "$h4" ]; then
+  ok "the board's own bookkeeping does not move the hash"
+else
+  no "the board's own bookkeeping does not move the hash" "h1=[$h1] h2=[$h2] h3=[$h3] h4=[$h4]"
+fi
+rm -rf "$d"
+
+# Making WORK_DENY real on the walk closed a livelock and, on its own, opened
+# the `docs/` hole in the one DIRECTORY WORK_DENY names: a `.svelte` written
+# into the state dir stopped moving the hash and dropped out of
+# WAIVER_FORBIDDEN, so `--grounds formatting-only` would be recorded over a
+# component vite still bundles and SSRs. Measured, both halves: pre-fix the hash
+# MOVED and WAIVER_FORBIDDEN listed the file; with the filter and no guard the
+# hash was UNCHANGED and WAIVER_FORBIDDEN was empty. The gate's first design
+# rule is fail closed, so this refuses BY NAME rather than either hiding it (a
+# silent allow) or hashing it (drift with no explanation, which is the livelock
+# CHR-19 killed). Both entry points, because the waiver half is the live half.
+for entry in hash waiver; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  printf '<div role="dialog" aria-modal="true"><button>no trap</button></div>\n' \
+    > "$d/.claude/.review-board-state/Evil.svelte"
+  if [ "$entry" = hash ]; then err=$(we "$d"); else err=$(wf "$d"); fi
+  # Names the offending FILE, not just the directory: "something in there" is
+  # not actionable, and the message is the entire remedy for a livelock.
+  if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+    ok "a rendered file in the state dir refuses by name ($entry)"
+  else
+    no "a rendered file in the state dir refuses by name ($entry)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# The same refusal one level down, which pins RECURSION rather than anything
+# about ignore rules: `state_dir_hides_source` walks the filesystem and its own
+# docblock says it is not conditional on the directory being ignored. An earlier
+# version of this comment credited the nested `.gitignore` below for reaching
+# the refusal, which a review round measured as decorative -- the guard fires
+# identically with and without it. That rationale is real, but it belongs to the
+# `:(exclude)` probe further down, where it IS load-bearing. Bounding the walk
+# to `-maxdepth 1` reddens this probe and the nine artifact shapes below it --
+# ten, measured. The figure has been wrong three times here: "this probe alone",
+# then "ten" (correct), then "twelve", the last written on the reasoning that
+# readability detection had moved onto this walk. It had not: readability is
+# carried by the DEPTH-probe walk's exit status, which this mutation does not
+# touch, so no readability probe can redden from it. Two reviewers measured ten
+# independently and the correction was made by re-running the mutation, not by
+# reasoning about it again -- which is the whole point, since every wrong
+# version here was produced by reasoning.
+d=$(new_repo) || exit 1
+mkdir -p "$d/.claude/.review-board-state/signoffs"
+printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
+err=$(we "$d")
+if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+  ok "a rendered file below the denied path refuses by name"
+else
+  no "a rendered file below the denied path refuses by name" "got [$err]"
+fi
+rm -rf "$d"
+
+# The "or sits UNDER one" arm of path_is_denied is a SEPARATE arm from the
+# exact-match one and the probes above cannot see it -- the state-dir guard
+# refuses before the filter matters, and bookkeeping below the denied path
+# would not move the hash even unfiltered (is_source rejects it). Deleting that
+# one line left the whole suite green. Pinned at the unit level instead.
+#
+# What makes `deny/sub/` survive `:(exclude)deny` at all is TRACKED CONTENT
+# inside the excluded directory, which forces git to descend past the pathspec
+# prune. Two earlier explanations of this fixture were wrong: it is not that git
+# only fails on the entry that IS the excluded path (this entry is strictly
+# below it and survives), and it is not the .gitignore's nesting. The nested
+# `.gitignore` works because committing it PUTS TRACKED CONTENT IN `deny/` --
+# any tracked file does the same, and a top-level rule naming the subdirectory
+# also survives once one exists. With nothing tracked inside, git prunes the
+# directory, the entry never appears, and this probe would pass for the wrong
+# reason. Measured all four ways.
+#
+# Note the live repo reaches only the exact-match arm: its state dir is ignored
+# whole and holds no tracked content. This arm is defensive coverage, not a
+# mirror of a production configuration.
+d=$(new_repo) || exit 1
+mkdir -p "$d/deny/sub" "$d/foo/bar"
+# Committed, not merely written: being TRACKED is what makes it work, and it
+# works as tracked content rather than as an ignore rule (see above).
+printf 'sub/\n' > "$d/deny/.gitignore"
+(cd "$d" && printf 'foo/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+printf 'x\n' > "$d/foo/bar/x.ts"
+printf 'x\n' > "$d/deny/sub/x.ts"
+imp() { (cd "$1" && shift && bash -c '. .claude/hooks/work-hash.sh; ignored_matching_paths "$@"' _ "$@"); }
+out=$(imp "$d" . ':(exclude)deny')
+# `foo/` is a POSITIVE CONTROL, not incidental: it is ignored and not excluded
+# here, so it must come back. Without it a broken-and-empty enumeration would
+# satisfy "deny/sub/ is absent" vacuously -- the shape this suite already
+# documents as the way an absence check stops discriminating.
+if printf '%s' "$out" | grep -qxF 'foo/' && ! printf '%s' "$out" | grep -q 'deny'; then
+  ok "an entry below an excluded path is suppressed"
+else
+  no "an entry below an excluded path is suppressed" "got [$out]"
+fi
+# Torn down before the probes below reuse this fixture: `deny/sub/` stays
+# ignored via its nested .gitignore and would otherwise appear in their output
+# and fail them for a reason that has nothing to do with what they assert.
+rm -rf "$d/deny"
+if [ "$(imp "$d" . ':(exclude)foo')" = "" ]; then
+  ok "an excluded ignored directory is suppressed"
+else
+  no "an excluded ignored directory is suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
+fi
+if [ "$(imp "$d" . ':(exclude)foo/bar')" = "foo/" ]; then
+  ok "an ignored directory is kept when the excluded path is below it"
+else
+  no "an ignored directory is kept when the excluded path is below it" "got [$(imp "$d" . ':(exclude)foo/bar')]"
+fi
+# `foo` is a string prefix of `foobar` without being a path prefix of it, so a
+# bare `${p#$deny}`-style test would drop the wrong directory.
+mkdir -p "$d/foobar"
+(cd "$d" && printf 'foo/\nfoobar/\n' > .gitignore) >/dev/null 2>&1
+printf 'export const y = 2\n' > "$d/foobar/y.ts"
+if [ "$(imp "$d" . ':(exclude)foo')" = "foobar/" ]; then
+  ok "a string-prefix match that is not a path prefix is not suppressed"
+else
+  no "a string-prefix match that is not a path prefix is not suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
+fi
+rm -rf "$d"
+
+# The guard's own bounds and blind spots, each of which was a SILENT ALLOW
+# before it carried its own walk. The first version reused `walk_hidden_dir`,
+# which answers "what should I hash" -- so it skipped `is_artifact` names,
+# pruned `*/.git`, stopped at depth 12, and drew its depth and readability
+# refusals from compute_work_hash's bounds loop, the very loop `path_is_denied`
+# had just removed the state dir from. A review round put a `role="dialog"`
+# with no focus trap in each of these and watched the gate report nothing, then
+# watched a real vite build server-render the `dist/` one.
+#
+# `deep` and `unreadable` are REGRESSIONS this body of work introduced and now
+# closes: both drew a named refusal at 0261ac8. The artifact and `.git` shapes
+# never worked, at 0261ac8 either -- they are here because the guard's own
+# refusal text promises they do.
+evil='<div role="dialog" aria-modal="true"><button>x</button></div>'
+for shape in dist build coverage node_modules .svelte-kit .cache .output .turbo .git; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/.claude/.review-board-state/$shape"
+  printf '%s\n' "$evil" > "$d/.claude/.review-board-state/$shape/Evil.svelte"
+  err=$(we "$d")
+  if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+    ok "a rendered file under an artifact-named state subdir refuses ($shape)"
+  else
+    no "a rendered file under an artifact-named state subdir refuses ($shape)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# Depth. The bound is the guard's own `-maxdepth`, so past it `find` simply does
+# not descend -- silently, which is why the refusal has to be derived from a
+# second count rather than from an empty walk.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/a/b/c/d/e/f/g/h/i/j/k/l"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/a/b/c/d/e/f/g/h/i/j/k/l/Evil.svelte"
+err=$(we "$d")
+# Names the directory, not the file: past the bound the gate has not seen the
+# file and must not pretend to. "nests deeper" is the actionable half.
+if printf '%s' "$err" | grep -q 'nests deeper'; then
+  ok "a rendered file below the state dir's depth bound refuses"
+else
+  no "a rendered file below the state dir's depth bound refuses" "got [$err]"
+fi
+rm -rf "$d"
+
+# Readability. `find`'s stderr is swallowed, so an unreadable directory is
+# byte-identical on stdout to an empty one. Mode 111 is the live shape: the
+# directory is still traversable by exact path, so a bundler resolving an import
+# reads the component fine while an unprobed gate enumerates nothing.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/hidden"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/hidden/Evil.svelte"
+chmod 111 "$d/.claude/.review-board-state/hidden"
+err=$(we "$d")
+chmod 755 "$d/.claude/.review-board-state/hidden"
+if printf '%s' "$err" | grep -q 'cannot be read'; then
+  ok "an unreadable state subdir refuses rather than reading as empty"
+else
+  no "an unreadable state subdir refuses rather than reading as empty" "got [$err]"
+fi
+rm -rf "$d"
+
+# ACL, not mode bits. On macOS `chmod +a "<user> deny list" <dir>` denies
+# readdir while the mode still reads `drwxr-xr-x` -- no root needed -- so every
+# `-perm` probe reads clean, `ls` on the state-dir ROOT succeeds because the ACL
+# is on a child, and `find` enumerates nothing. Measured before this was fixed:
+# a `role="dialog"` with no focus trap sat there through four `--pass` sign-offs
+# while staying readable by exact path, so a bundler resolving the import got a
+# component the gate could not see. `ls -- <dir>` would in fact have caught THIS
+# ACL: an earlier version of this comment said it exits 0 with empty output,
+# which was measured in a shell where `ls` is an alias for `eza` -- `/bin/ls`,
+# which is what a hook gets, exits 1. Neither `ls` nor access(2) survived
+# contact with the next ACL verb, and both were removed once asking `find`
+# whether it FINISHED turned out to subsume every permission shape at once --
+# see the `readattr` probes below. This probe pins ONE instance of the ACL
+# class and is named for that instance; the mechanism it exercises today is the
+# exit-status check, not a permission test.
+#
+# Skips honestly where `chmod +a` does not exist rather than passing silently:
+# this is a macOS-specific mechanism, and a probe that quietly no-ops elsewhere
+# reads as coverage it does not have.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/acl"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/acl/Evil.svelte"
+if chmod +a "$(id -un) deny list" "$d/.claude/.review-board-state/acl" 2>/dev/null; then
+  err=$(we "$d")
+  # Strip the ACL BEFORE rm -rf, or the teardown wedges on the same denial.
+  chmod -N "$d/.claude/.review-board-state/acl" 2>/dev/null
+  if printf '%s' "$err" | grep -q 'cannot be read'; then
+    ok "a list-denied ACL on a state subdir refuses rather than reading as empty"
+  else
+    no "a list-denied ACL on a state subdir refuses rather than reading as empty" "got [$err]"
+  fi
+else
+  ok "a list-denied ACL on a state subdir refuses rather than reading as empty (skipped: no chmod +a here)"
+fi
+rm -rf "$d"
+
+# Vite compiles more than `.css`. Its own matcher in the installed 8.1.5 is
+# `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and IS_SOURCE_EXT carried
+# five of those nine. Build-proven rather than read off the regex: a scratch
+# project using this repo's own vite compiled a state-dir `.pcss` into shipped
+# CSS carrying `outline: none` on `:focus-visible`, and
+# `--grounds formatting-only` recorded cleanly over it.
+for ext in pcss postcss sss stylus scss less sass styl; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  printf ':root{--x:1}.focus-invisible:focus-visible{outline:none}\n' \
+    > "$d/.claude/.review-board-state/theme.$ext"
+  err=$(we "$d")
+  if printf '%s' "$err" | grep -q "theme.$ext"; then
+    ok "a stylesheet vite compiles refuses in the state dir (.$ext)"
+  else
+    no "a stylesheet vite compiles refuses in the state dir (.$ext)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# The same extensions must also be unwaivable tree-wide: WAIVER_NEVER carried
+# only `.css`, so `assets/theme.pcss` outside `src/` waived cleanly anywhere.
+for ext in pcss postcss sss stylus scss less sass styl; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  mkdir -p "$d/assets"
+  printf '.focus-invisible:focus-visible{outline:none}\n' > "$d/assets/theme.$ext"
+  if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+    no "a stylesheet vite compiles is not waivable outside src/ (.$ext)" "waiver was accepted"
+  else
+    ok "a stylesheet vite compiles is not waivable outside src/ (.$ext)"
+  fi
+  rm -rf "$d"
+done
+
+# SVG carries `role`, `aria-label` and `<title>`, so it renders in the sense
+# WAIVER_NEVER means -- but it was in IS_SOURCE_EXT only, so `assets/icon.svg`
+# outside `src/` waived cleanly under `formatting-only`.
+d=$(new_repo) || exit 1
+mkdir -p "$d/assets"
+printf '<svg role="img" aria-label="unreviewed"><title>x</title></svg>\n' > "$d/assets/icon.svg"
+if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+  no "an svg outside src/ is not waivable" "waiver was accepted"
+else
+  ok "an svg outside src/ is not waivable"
+fi
+rm -rf "$d"
+
+# Case. `renders()` has always lowercased; `is_source` does not, and the two
+# disagreeing let `Evil.SVELTE` escape this guard while `renders()` would forbid
+# waiving the identical file anywhere else in the tree.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.SVELTE"
+err=$(we "$d")
+if printf '%s' "$err" | grep -q 'Evil.SVELTE'; then
+  ok "an uppercase extension in the state dir does not escape the guard"
+else
+  no "an uppercase extension in the state dir does not escape the guard" "got [$err]"
+fi
+rm -rf "$d"
+
+# An ACL denying `readattr` defeats every probe that asks about permission,
+# because `find` cannot classify the entry at all: `-type d` never names the
+# directory, so a per-directory test never runs on it, and `-type f` never
+# descends. Mode bits read `drwxr-xr-x`, access(2) answers true for both, and the
+# depth counters come back equal. Build-proven as a live fail-open before this
+# was closed -- vite compiled a component behind such an ACL and shipped
+# `aria-modal="true"` with no focus trap into the bundle, while the hash stayed
+# put and WAIVER_FORBIDDEN stayed empty. The only probe that catches it is
+# asking `find` whether it finished.
+#
+# Driven at BOTH scopes because they are different walks: the state dir goes
+# through `state_dir_hides_source`, and a plain ignored directory goes through
+# `walk_hidden_dir`, where this was a pre-existing hole rather than one this
+# body of work introduced.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    target="$d/.claude/.review-board-state/parts"
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    target="$d/tmp/parts"
+  fi
+  mkdir -p "$target"
+  printf '%s\n' "$evil" > "$target/Evil.svelte"
+  if chmod +a "$(id -un) deny readattr" "$target" 2>/dev/null; then
+    err=$(we "$d")
+    # Before rm -rf, or the teardown wedges on the same denial.
+    chmod -N "$target" 2>/dev/null
+    # Any refusal naming the directory is correct here; the file cannot be named
+    # because the gate never saw it, which is the honest thing to report.
+    if [ -n "$err" ]; then
+      ok "a readattr-denied directory refuses rather than reading as empty ($scope)"
+    else
+      no "a readattr-denied directory refuses rather than reading as empty ($scope)" "no refusal; got []"
+    fi
+  else
+    ok "a readattr-denied directory refuses rather than reading as empty ($scope, skipped: no chmod +a here)"
+  fi
+  rm -rf "$d"
+done
+
+# The same denial on the state directory ITSELF is a different arm again:
+# `[ -d "$STATE_DIR" ]` is a stat, so a readattr denial there turned "this
+# directory holds a component" into "there is no state directory" and returned
+# quietly. Answered now by asking the PARENT for its entries, since readdir
+# supplies names without stat'ing them.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+if chmod +a "$(id -un) deny readattr" "$d/.claude/.review-board-state" 2>/dev/null; then
+  err=$(we "$d")
+  chmod -N "$d/.claude/.review-board-state" 2>/dev/null
+  if printf '%s' "$err" | grep -q 'cannot be read'; then
+    ok "a readattr-denied state dir ROOT refuses rather than reading as absent"
+  else
+    no "a readattr-denied state dir ROOT refuses rather than reading as absent" "got [$err]"
+  fi
+else
+  ok "a readattr-denied state dir ROOT refuses rather than reading as absent (skipped: no chmod +a here)"
+fi
+rm -rf "$d"
+
+# The negative control for that arm, and the more important half: a genuinely
+# absent state directory must still return quietly. Getting this wrong makes
+# every fresh checkout refuse, which is the livelock CHR-19 exists to remove.
+d=$(new_repo) || exit 1
+rm -rf "$d/.claude/.review-board-state"
+res=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; state_dir_hides_source')
+if [ -z "$res" ]; then
+  ok "a genuinely absent state dir does not provoke a refusal"
+else
+  no "a genuinely absent state dir does not provoke a refusal" "got [$res]"
+fi
+# The refusal must also still fire for a state dir that exists but holds source,
+# from the SAME fixture shape -- otherwise the negative control above is
+# satisfiable by a guard that never refuses at all.
+printf '%s\n' "$evil" > "$d/Evil.svelte" 2>/dev/null
+mkdir -p "$d/.claude/.review-board-state"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+res=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; state_dir_hides_source')
+case "$res" in
+  source:*Evil.svelte) ok "the same fixture still refuses once the state dir exists" ;;
+  *) no "the same fixture still refuses once the state dir exists" "got [$res]" ;;
+esac
+rm -rf "$d"
+
+# The `-maxdepth` BOUNDARY, which every permission probe in this file used to
+# miss because they all plant their fixture at depth 1. `find` never OPENS a
+# directory sitting at exactly `-maxdepth`, so a denial that blocks only descent
+# lets the `-type f` walk exit 0 with the contents silently absent. Measured at
+# depths 1, 11 and 12: `chmod 000`, `111`, `666` and an ACL denying `list` all
+# exit 1 at 1 and 11 and 0 at exactly 12, on BSD find and bfs alike. Only the
+# deeper depth-probe walk opens it, which is why its exit status is now read.
+#
+# The two scopes need DIFFERENT shapes, which is the trap here. In the state dir
+# `chmod 111` discriminates, because that guard has no permission probe left at
+# all. Tree-wide it does NOT: `compute_work_hash`'s bounds loop still carries
+# `-perm` arms with no `-maxdepth`, so they stat the boundary directory from its
+# parent and catch a mode denial there for their own reasons. Measured -- the
+# first version of this probe used `chmod 111` for both and stayed green with
+# the tree-wide check deleted. An ACL denying `list` leaves mode bits clean, so
+# only the deeper depth-probe walk sees it.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    root="$d/.claude/.review-board-state"
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    root="$d/tmp"
+  fi
+  # EXACTLY twelve levels below the walk root, which is the boundary: the root
+  # is depth 0, so `l` is depth 12 and `find -maxdepth 12` never opens it. An
+  # earlier version used eleven, where the ordinary walk still opens the
+  # directory and its own exit status catches the denial -- so the probe passed
+  # with the boundary check deleted, for a reason that had nothing to do with
+  # the boundary.
+  deep="$root/a/b/c/d/e/f/g/h/i/j/k/l"
+  mkdir -p "$deep"
+  printf '%s\n' "$evil" > "$deep/Evil.svelte"
+  if [ "$scope" = state-dir ]; then
+    chmod 111 "$deep"; err=$(we "$d"); chmod 755 "$deep"
+    if [ -n "$err" ]; then
+      ok "a denial at exactly the depth bound refuses ($scope)"
+    else
+      no "a denial at exactly the depth bound refuses ($scope)" "no refusal; got []"
+    fi
+  elif chmod +a "$(id -un) deny list" "$deep" 2>/dev/null; then
+    err=$(we "$d"); chmod -N "$deep" 2>/dev/null
+    if [ -n "$err" ]; then
+      ok "a denial at exactly the depth bound refuses ($scope)"
+    else
+      no "a denial at exactly the depth bound refuses ($scope)" "no refusal; got []"
+    fi
+  else
+    ok "a denial at exactly the depth bound refuses ($scope, skipped: no chmod +a here)"
+  fi
+  rm -rf "$d"
+done
+
+# A transient failure must not let the walk report the FAILED attempt's output.
+# Re-probing readability is not re-enumerating: an earlier version ran a second
+# `find` with its output discarded, so when that probe succeeded the caller kept
+# walk one's partial listing and was told nothing was wrong. A reviewer drove
+# that to a recorded `formatting-only` waiver over a live component, and to two
+# different file bodies hashing identically. This plants real source, fails the
+# first walk of that directory, and asserts the component is STILL seen.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+    match='Evil.svelte'
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    mkdir -p "$d/tmp/parts"
+    printf '%s\n' "$evil" > "$d/tmp/parts/Evil.svelte"
+    match='tmp'
+  fi
+  shimdir=$(mktemp -d) || exit 1
+  realfind=$(command -v find)
+  cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+p0=no
+for a in "\$@"; do [ "\$a" = "-print0" ] && p0=yes; done
+if [ "\$p0" = yes ] && [ ! -f "$shimdir/fired" ]; then
+  : > "$shimdir/fired"; exit 1
+fi
+exec $realfind "\$@"
+SHIM
+  chmod +x "$shimdir/find"
+  err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+  hash=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"')
+  # Either outcome is correct: refuse by name, or hash it. Silence is not.
+  if printf '%s' "$err" | grep -q "$match" || [ -n "$hash" ]; then
+    ok "a transient failure does not report a partial read as nothing ($scope)"
+  else
+    no "a transient failure does not report a partial read as nothing ($scope)" "silent: err=[$err] hash=[$hash]"
+  fi
+  rm -rf "$shimdir" "$d"
+done
+
+# A FORGED `.git` shape must not hide a component. The prune tests for `HEAD`
+# plus `objects/` rather than trusting the name, and both are trivially
+# creatable -- so the shape is forgeable, and a name-only `.git` (which the
+# prune correctly walks) is the control that proves the probe is testing the
+# forged case rather than the easy one. `is_artifact` would KEEP these paths, so
+# the prune and the classifier disagree, and a disagreement that drops content
+# is a fail-open however the decision was reached.
+for shape in forged real name-only; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/tmp/parts/.git"
+  case "$shape" in
+    forged) mkdir -p "$d/tmp/parts/.git/objects"; printf 'ref: refs/heads/main\n' > "$d/tmp/parts/.git/HEAD" ;;
+    real)   git init -q --bare "$d/tmp/parts/.git" >/dev/null 2>&1 ;;
+    name-only) : ;;
+  esac
+  printf '%s\n' "$evil" > "$d/tmp/parts/.git/Modal.svelte"
+  err=$(we "$d"); errw=$(wf "$d")
+  if printf '%s' "$err" | grep -q 'Modal.svelte'; then
+    ok "a component behind a .git prune refuses by name ($shape)"
+  else
+    no "a component behind a .git prune refuses by name ($shape)" "got [$err]"
+  fi
+  # The waiver half separately, because it is the live half.
+  if [ "$shape" = forged ]; then
+    if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+      no "a component behind a forged .git is not waivable" "waiver was accepted"
+    else
+      ok "a component behind a forged .git is not waivable"
+    fi
+  fi
+  rm -rf "$d"
+done
+
+# `renders()` is fed paths straight out of `walk_hidden_dir`, which prefixes
+# every one with `./`. Its `src/`/`static/` PREFIX arms therefore matched
+# nothing that came from a walk, so two brand-new SvelteKit load functions under
+# an ignored `src/routes/tmp/` -- one turning SSR off -- recorded a
+# `formatting-only` waiver with no reviewer. `.svelte` survived on its suffix
+# arm; `.ts`, `.js`, `.json` and every `static/` asset did not, which is why
+# this probe uses a load function rather than a component.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/src/routes/tmp"
+printf 'export const ssr = false;\nexport function load() { return {}; }\n' \
+  > "$d/src/routes/tmp/+page.server.ts"
+if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+  no "a load function in an ignored src/ directory is not waivable" "waiver was accepted"
+else
+  ok "a load function in an ignored src/ directory is not waivable"
+fi
+rm -rf "$d"
+
+# The retry probe that separates CHURN from an unreadable tree. `find`'s exit
+# status answers "did I finish", which is a strictly larger set than "could I
+# read": a directory removed while it was descending also makes it non-zero, and
+# this repo's own `.gitignore` lists `test-results/`, which Playwright creates
+# and destroys throughout a run. Refusing on the bare status made the gate DENY
+# a churning tree it had allowed, blaming an ACL that was not there.
+#
+# Driven with a `find` SHIM rather than a background `rm -rf` race, because a
+# racy probe that passes when the race is lost is worse than none. The shim
+# fails a bounded number of times and then delegates, which is exactly the shape
+# churn has and nothing like the shape a permission denial has.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp/parts" && printf 'note\n' > "$d/tmp/parts/a.md"
+shimdir=$(mktemp -d) || exit 1
+realfind=$(command -v find)
+# Fails only the FIRST call, then delegates: transient, and must not refuse.
+# Fails only calls naming the ignored directory under test, and only the first.
+# Two earlier versions pinned nothing and both passed: failing "the first find
+# call" hit a depth probe, whose own re-measure absorbed it; failing the first
+# `-print0` hit the STATE-DIR walk, whose own retry absorbed it; and failing the
+# first call naming this directory hit the DEPTH probe, whose re-measure
+# absorbed it. It takes both conditions -- this directory AND `-print0` -- to
+# reach `walk_hidden_dir`'s own walk, which is the retry whose absence was
+# measured as a live false refusal. Each of the three earlier versions passed
+# while pinning nothing, which is the failure mode this suite exists to refuse,
+# so each was found by deleting the retry and watching the probe stay green.
+cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+dir=no; p0=no
+for a in "\$@"; do
+  case "\$a" in *tmp*) dir=yes ;; esac
+  [ "\$a" = "-print0" ] && p0=yes
+done
+if [ "\$dir" = yes ] && [ "\$p0" = yes ] && [ ! -f "$shimdir/fired" ]; then
+  : > "$shimdir/fired"; exit 1
+fi
+exec $realfind "\$@"
+SHIM
+chmod +x "$shimdir/find"
+err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if [ -z "$err" ]; then
+  ok "a transient find failure does not refuse"
+else
+  no "a transient find failure does not refuse" "spurious refusal: [$err]"
+fi
+# Fails every time: a real denial, and must refuse.
+# Fails every `-print0` call: a real denial, which must survive the retry.
+cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+dir=no; p0=no
+for a in "\$@"; do
+  case "\$a" in *tmp*) dir=yes ;; esac
+  [ "\$a" = "-print0" ] && p0=yes
+done
+[ "\$dir" = yes ] && [ "\$p0" = yes ] && exit 1
+exec $realfind "\$@"
+SHIM
+chmod +x "$shimdir/find"
+err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if [ -n "$err" ]; then
+  ok "a persistent find failure still refuses"
+else
+  no "a persistent find failure still refuses" "no refusal; got []"
+fi
+rm -rf "$shimdir" "$d"
+
+# A FILENAME must not be able to forge a sentinel. The consumers matched with
+# `case "$blob" in *"$SENTINEL"*` over a multi-line blob, so a file called
+# `prefix__WALK_UNREADABLE__suffix.txt` in any ignored directory produced a
+# refusal naming a condition that did not exist, unclearable by the remedy the
+# message gave -- tree-wide, and pre-existing for two of the three sentinels.
+for forge in "__WALK_UNREADABLE__" "prefix__WALK_UNREADABLE__suffix.txt" \
+             "__WALK_TRUNCATED__" "__WALK_NEWLINE__.txt"; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/tmp"
+  printf 'ordinary content\n' > "$d/tmp/$forge"
+  err=$(we "$d")
+  if [ -z "$err" ]; then
+    ok "a filename cannot forge a walk sentinel ($forge)"
+  else
+    no "a filename cannot forge a walk sentinel ($forge)" "spurious refusal: [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# The `newline` arm of state_dir_refusal, which a reviewer showed IS producible
+# by the detector -- so the formatter probe's claim that only `*)` is
+# unreachable was wrong, and deleting this arm left the whole suite green.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+nl=$(printf 'two\nlines.svelte')
+if printf '%s\n' "$evil" > "$d/.claude/.review-board-state/$nl" 2>/dev/null; then
+  err=$(we "$d")
+  errw=$(wf "$d")
+  if printf '%s' "$err" | grep -q 'literal newline byte' && printf '%s' "$errw" | grep -q 'literal newline byte'; then
+    ok "a newline-named file in the state dir refuses with the newline sentence"
+  else
+    no "a newline-named file in the state dir refuses with the newline sentence" "hash=[$err] waiver=[$errw]"
+  fi
+  rm -f "$d/.claude/.review-board-state/$nl"
+else
+  no "a newline-named file in the state dir refuses with the newline sentence" "could not create the fixture"
+fi
+rm -rf "$d"
+
+# The refusal must never hand a person an internal token where a path belongs.
+# An earlier version of THIS PROBE did not pin that. A reviewer made the
+# detector emit `__WALK_TRUNCATED__` as its reason; the sentinel duly surfaced
+# in the sentence -- via the formatter's `*)` arm, which echoed its argument
+# verbatim -- while this probe stayed green and the leak showed up only inside a
+# neighbouring probe's failure payload. Its only live discrimination was that
+# the fallback existed and returned non-empty. The reasons it fed were all ones
+# the detector emits, none of which can contain a sentinel, so it was scanning
+# for something its own inputs could not produce.
+#
+# It now feeds sentinel-BEARING reasons -- the shape a carelessly added reason
+# would produce -- and asserts three properties: no arm leaks an internal token,
+# no arm returns empty (an empty WORK_ERROR is a block with no explanation,
+# which is the livelock class), and each known reason produces its own
+# distinguishable sentence rather than silently falling through to the default.
+#
+# `source:` is exempt from the token scan by design: that arm interpolates a
+# real path, and a file genuinely named `__WALK_TRUNCATED__.svelte` should be
+# named. Driving the formatter directly is deliberate -- `deep` and `unreadable`
+# have their own fixtures above, and the remaining arms are reachable only from
+# the `*)` state, which the detector cannot produce. An earlier version of this
+# comment said that of `newline` too, which was wrong -- a newline-named file in
+# the state dir reaches it, and the newline fixture above this one
+# proves it at both entry points. That comment also justified the choice with
+# "a 750-file directory", which is
+# `WALK_HIDDEN_CAP`, belonging to `walk_hidden_dir`; this walk deliberately has
+# no cap.)
+fmt() { (cd "$HOOKS_SRC/../.." && bash -c '. .claude/hooks/work-hash.sh; state_dir_refusal "$1" "test"' _ "$1"); }
+bad=""
+for reason in "unreadable:$STATE_DIR_PROBE" "deep:$STATE_DIR_PROBE" "newline:$STATE_DIR_PROBE" \
+              "__WALK_TRUNCATED__:$STATE_DIR_PROBE" "__WALK_NEWLINE__:x" "wat:$STATE_DIR_PROBE"; do
+  m=$(fmt "$reason")
+  [ -z "$m" ] && bad="${bad} ${reason}(empty)"
+  case "$m" in
+    *__WALK_*|*__DENIED_*) bad="${bad} ${reason}(token-leak)" ;;
+  esac
+done
+# Each known arm distinguishable, or three of them could be the default arm
+# wearing three different inputs.
+[ "$(fmt "unreadable:$STATE_DIR_PROBE")" = "$(fmt "deep:$STATE_DIR_PROBE")" ] && bad="${bad} unreadable/deep(identical)"
+[ "$(fmt "deep:$STATE_DIR_PROBE")" = "$(fmt "newline:$STATE_DIR_PROBE")" ] && bad="${bad} deep/newline(identical)"
+case "$(fmt "source:x/y.svelte")" in *x/y.svelte*) ;; *) bad="${bad} source(path-dropped)" ;; esac
+if [ -z "$bad" ]; then
+  ok "every refusal reason formats to a sentence, never a bare token"
+else
+  no "every refusal reason formats to a sentence, never a bare token" "leaked for:${bad}"
+fi
+
+# The `${#__deny[@]}` guard in `ignored_matching_paths`. Stock macOS /bin/bash
+# (3.2) treats expanding an EMPTY array under `set -u` as an unbound variable
+# and dies -- which at the two `-C` call sites, the ones that pass no excludes,
+# silently takes out the gitlink and worktree checks: a fail-OPEN, and the
+# reason the guard is written as a count test rather than a bare expansion.
+#
+# Drives /bin/bash EXPLICITLY, because the suite itself runs under whatever
+# `bash` is on PATH and that is 5.x on this machine, where the same code is
+# fine. Its discrimination is therefore version-dependent BY NATURE: it reddens
+# where /bin/bash is 3.2 and is a weaker (still true) assertion elsewhere. Said
+# plainly rather than dressed up as portable coverage -- the version it actually
+# ran against is printed, so a green line cannot be mistaken for a proof it did
+# not do.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp" && printf 'x\n' > "$d/tmp/x.md"
+bv=$(/bin/bash --version 2>/dev/null | head -1 | sed -n 's/.*version \([0-9.]*\).*/\1/p')
+out=$(cd "$d" && /bin/bash -c 'set -u; . .claude/hooks/work-hash.sh; ignored_matching_paths -C . .' 2>&1)
+if printf '%s' "$out" | grep -qxF 'tmp/'; then
+  ok "the empty-deny guard survives set -u at the -C call sites (/bin/bash $bv)"
+else
+  no "the empty-deny guard survives set -u at the -C call sites (/bin/bash $bv)" "got [$out]"
+fi
+rm -rf "$d"
+
 # Istanbul's own layout puts `src` BELOW the artifact root. Escaping on any `src`
 # segment regardless of position hashed 3000 coverage files at 7.05s and blocked.
 # The scan is left-to-right now: first matching segment decides.
@@ -1021,18 +1771,23 @@ for mode in 400 000; do
   rm -rf "$d"
 done
 
-# An unreadable FILE: cat/shasum swallow EPERM, so the name reached the hash and
-# the content did not -- arbitrary content changes invisible with no error.
+# An unreadable FILE must block even where the current user can bypass mode bits.
+# A `wc` shim makes the size-read failure deterministic on every platform.
 d=$(new_repo) || exit 1
 (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
-rm -f "$d/.claude/.review-board-state/last-cleared"
-(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-signoff.sh --initialize) >/dev/null 2>&1
-mkdir -p "$d/tmp"; printf '<div role="dialog"></div>\n' > "$d/tmp/C.svelte"; chmod 000 "$d/tmp/C.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
-chmod 644 "$d/tmp/C.svelte"
-printf '%s' "$out" | grep -q "cannot be read" &&
+mkdir -p "$d/tmp" "$d/fakebin"; printf '<div role="dialog"></div>\n' > "$d/tmp/C.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+cat > "$d/fakebin/wc" <<'SHIM'
+#!/usr/bin/env bash
+case "$*" in *-c*) exit 1 ;; *) exec /usr/bin/wc "$@" ;; esac
+SHIM
+chmod +x "$d/fakebin/wc"
+printf '<main role="dialog"></main>\n' > "$d/tmp/C.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$d/fakebin:$PATH" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
+printf '%s' "$out" | grep -q "could not be read" &&
   ok "an unreadable file inside an ignored tree blocks" ||
-  no "an unreadable file inside an ignored tree blocks" "gate was silent"
+  no "an unreadable file inside an ignored tree blocks" "gate output: $out"
 rm -rf "$d"
 
 

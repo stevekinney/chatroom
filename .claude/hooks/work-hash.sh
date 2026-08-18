@@ -79,6 +79,24 @@ WAIVER_NEVER=(
   '.svelte'
   '.html'
   '.css'
+  # The rest of what vite 8.1.5 compiles as CSS: its own matcher is
+  # `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and this list carried
+  # only `.css`, so `assets/theme.pcss` was waivable anywhere outside `src/`.
+  # Build-proven rather than read off the regex: a scratch project using this
+  # repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying
+  # `outline: none` on `:focus-visible`, with `--grounds formatting-only`
+  # recorded cleanly over it.
+  '.scss'
+  '.sass'
+  '.less'
+  '.styl'
+  '.stylus'
+  '.pcss'
+  '.postcss'
+  '.sss'
+  # SVG carries `role`, `aria-label` and `<title>`, and was in IS_SOURCE_EXT but
+  # not here, so `assets/icon.svg` waived cleanly under `formatting-only`.
+  '.svg'
   # Build config decides what SSRs and how it hydrates -- this repo has no
   # svelte.config.js, so vite.config.ts is where the sveltekit() plugin lives.
   # `--grounds formatting-only` cleared a rewrite setting `ssr.noExternal` and
@@ -96,10 +114,15 @@ WAIVER_NEVER=(
 )
 
 # Build artifacts. `git status --ignored=matching -- ':(exclude)node_modules'`
-# does NOT filter these: a collapsed ignored-directory entry is reported whole
-# regardless of the pathspec, verified against `coverage/` and `node_modules/`
-# both bare and as `/**`. So the exclusion the enumeration thought it had was
-# inert, and the bound has to be applied to the paths themselves.
+# does NOT filter these on git's side: a collapsed ignored-directory entry is
+# reported whole regardless of the pathspec, verified against `coverage/` and
+# `node_modules/` both bare and as `/**`. `path_is_denied` now applies those
+# excludes to the paths themselves once they are back from git, so the two
+# enumerations that pass artifact excludes DO get them honored -- but this list
+# is still what bounds the walk everywhere else, including the enumeration that
+# passes WORK_DENY alone and every per-FILE decision `is_artifact` makes inside
+# a directory that was not excluded at all. Deriving the bound from the paths
+# is the load-bearing half either way; the pathspec was never the mechanism.
 ARTIFACT_DIRS=(
   node_modules .svelte-kit dist build test-results playwright-report .turbo
   coverage .nyc_output .cache .next .direnv .output .vercel .netlify .wrangler
@@ -135,6 +158,16 @@ ignore_source_is_external() {
 # unconditionally-safe fast paths and every keep/drop answer comes from
 # `is_artifact`, so the two rules cannot disagree because only one is asked.
 #
+# The `.git` prune tests whether the directory IS a repository (`HEAD` plus an
+# `objects/` directory) rather than trusting its name. A bare `-path '*/.git'`
+# dropped anything under any directory so named while `find` still exited 0 --
+# so a rendered file parked in `tmp/parts/.git/` was silently unhashed and
+# freely waivable, build-proven into a vite bundle. `.git` is deliberately NOT
+# in ARTIFACT_DIRS, so `is_artifact` would have KEPT that file: the prune and
+# the classifier disagreed, and a disagreement that drops content is a
+# fail-open. A real repository's internals stay pruned, which is what the prune
+# was for; anything else named `.git` is now walked like any other directory.
+#
 # `-L` because the walk stopped one indirection short: a symlinked subdirectory
 # inside an ignored directory yielded `-type l`, never `-type f`, so a component
 # behind `tmp/parts -> /outside` was invisible from the first round. `-L` with a
@@ -159,38 +192,126 @@ WALK_TRUNCATED_SENTINEL='__WALK_TRUNCATED__'
 # and a record containing an embedded `\n` after that read is unambiguously
 # a path this walk cannot safely emit, not a record-boundary artifact.
 NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
+# `find` could not read some part of the tree it was pointed at. Its stderr is
+# swallowed at every call site, so an INCOMPLETE walk is byte-identical on
+# stdout to an empty one -- and no permission probe closes that, which is the
+# lesson that cost this file two rounds. `chmod 000`/`111` are caught by mode
+# bits; a macOS ACL denying `list` is caught by access(2) but not by mode bits;
+# and an ACL denying `readattr` is caught by NEITHER, because `find` then cannot
+# even classify the entry: `-type d` never names the directory, so a
+# per-directory test never runs on it, and `-type f` never descends. Build-proven
+# as a live fail-open -- a component behind `chmod +a "<user> deny readattr"`
+# left the hash unmoved and WAIVER_FORBIDDEN empty while vite compiled it and
+# shipped `aria-modal="true"` with no focus trap into the bundle.
+#
+# So the walk stops inferring absence from a short read and asks `find` whether
+# it finished. That covers every shape that stops it TRAVERSING -- every mode
+# denial and every ACL variant tried so far -- because it tests the thing that
+# matters rather than one mechanism that can cause it. A file-content denial is
+# distinct: `find` never opens files, so the reads below must report failure.
+WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
+
+# Prints the first source file hiding inside a PRUNED `.git` directory under
+# $1, or nothing.
+#
+# The prune tests whether a directory IS a repository -- `HEAD` plus `objects/`
+# -- rather than trusting its name, which is a weaker test than it looks: both
+# entries are trivially creatable, so `mkdir -p x/.git/objects && echo ref: > \
+# x/.git/HEAD` forges the shape, and a `role="dialog"` parked beside them was
+# dropped by the prune while `is_artifact` would have KEPT it. That is the same
+# prune-versus-classifier disagreement the name-only prune had; narrowing the
+# domain did not remove it, because shape is no more evidence about content than
+# a name is.
+#
+# So the prune stays -- a real repository's internals are genuinely not review
+# material, and walking them would blow the file cap -- and what it drops is
+# scanned for source instead. Refusing by name is the fail-closed answer and the
+# actionable one, exactly as it is for the state directory.
+pruned_git_source() {
+  local __root="$1" __g __hit
+  [ -d "$__root" ] || return 0
+  while IFS= read -r -d '' __g; do
+    __hit=$(find -L "$__g" -maxdepth 12 -type f -print0 2>/dev/null \
+      | while IFS= read -r -d '' __f; do is_source "$__f" && { printf '%s' "$__f"; break; }; done)
+    if [ -n "$__hit" ]; then printf '%s\n' "$__hit"; return 0; fi
+  done < <(find -L "$__root" -maxdepth 12 -name .git -type d -print0 2>/dev/null)
+  return 0
+}
+
+# THE ONE PRUNE CLAUSE. Every walk and every probe that claims to bound the same
+# tree uses this array, because the alternative was tried: the clause was
+# spelled twice, a comment asserted the two matched, and narrowing one arm made
+# that assertion false without touching the comment.
+#
+# The `.git` arm tests whether the directory IS a repository -- `HEAD` plus an
+# `objects/` directory -- rather than trusting its name, and that is a WEAKER
+# test than it looks: both entries are trivially creatable, so the shape can be
+# forged. It is paired with a source scan of whatever it prunes (see
+# pruned_git_source), because a prune that drops content while `find` exits 0 is
+# a fail-open however the decision was reached.
+WALK_PRUNE_CLAUSE=(
+  \( -name .git -a -exec test -e '{}/HEAD' -a -d '{}/objects' ';' \)
+  -o \( \( -name node_modules -o -name .svelte-kit \)
+       ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \)
+)
 walk_hidden_dir() {
-  local root_dir="$1" count=0 p
+  local root_dir="$1" count=0 p __ec __try __buf
   # `./` prefix if relative and not already so: a directory literally named
   # `-lab` passed bare to `find` is parsed as an unknown OPTION FLAG
-  # (`illegal option -- l`), not a path -- stderr swallowed below the same
-  # way an unreadable directory's is, so the whole directory silently
-  # dropped out of the walk with no refusal. `${root_dir#/}` unchanged means
-  # no leading `/` was stripped, i.e. the path was already relative.
+  # (`illegal option -- l`), not a path -- stderr swallowed, so the whole
+  # directory silently dropped out of the walk with no refusal.
   [ "${root_dir#/}" = "$root_dir" ] && root_dir="./$root_dir"
+
+  # BUFFERED, then emitted, and this is the point. An earlier version streamed
+  # the walk and, on a non-zero status, ran a second `find` as a readability
+  # PROBE whose output went to /dev/null -- so when the retry succeeded the
+  # caller kept walk ONE's partial output and was told nothing was wrong. A
+  # reviewer drove that to a recorded `formatting-only` waiver over a live
+  # component, and to two different file bodies hashing identically. Re-probing
+  # readability is not the same as re-enumerating; only the output of a walk
+  # that actually finished may be used.
+  #
+  # Two attempts, because a directory removed mid-descent also makes `find`
+  # exit non-zero and this repo ignores `test-results/`, which Playwright churns
+  # throughout a run. Churn clears on a re-read; a permission denial does not
+  # (measured: `chmod 000` exits 1 twice running, a vanished directory exits 0
+  # on the retry). Buffering costs the cap's worth of paths, which is bounded by
+  # construction at WALK_HIDDEN_CAP.
+  for __try in 1 2; do
+    __buf=$(mktemp 2>/dev/null) || { printf '%s\n' "$WALK_UNREADABLE_SENTINEL"; return 0; }
+    find -L "$root_dir" -maxdepth 12 \( "${WALK_PRUNE_CLAUSE[@]}" \) -prune -o \
+      -type f -print0 2>/dev/null > "$__buf"
+    __ec=$?
+    [ "$__ec" = "0" ] && break
+    rm -f "$__buf" 2>/dev/null
+    __buf=""
+  done
+  if [ -z "$__buf" ]; then
+    printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
+    return 0
+  fi
+
   while IFS= read -r -d '' p; do
     [ -z "$p" ] && continue
     case "$p" in
       *$'\n'*)
         printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
+        rm -f "$__buf" 2>/dev/null
         return 0
         ;;
     esac
     is_artifact "$p" && continue
     count=$((count + 1))
     # A terminal sentinel LINE, not a variable: this runs inside `$( )` at every
-    # call site, so stdout is the only channel out. Six separate bugs in this
-    # file came from smuggling a non-filename property through it or re-deriving
-    # it in the caller; the sentinel is that property travelling as data.
+    # call site, so stdout is the only channel out.
     if [ "$count" -gt "$WALK_HIDDEN_CAP" ]; then
       printf '%s\n' "$WALK_TRUNCATED_SENTINEL"
+      rm -f "$__buf" 2>/dev/null
       return 0
     fi
     printf '%s\n' "$p"
-  done < <(find -L "$root_dir" -maxdepth 12 \
-    \( -path '*/.git' -o \( \( -name node_modules -o -name .svelte-kit \) \
-         ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \) \) -prune -o \
-    -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+  done < <(LC_ALL=C sort -z < "$__buf")
+  rm -f "$__buf" 2>/dev/null
 }
 
 # True for a path inside a build artifact directory. A single left-to-right
@@ -245,11 +366,26 @@ is_artifact() {
 # .svelte/.html/.css, which left `.ts`/`.js`/`.json` inside a hidden directory
 # invisible -- confirmed shipped by a real vite build).
 IS_SOURCE_EXT=(
-  .svelte .html .css .scss .sass .less .styl .svx
+  .svelte .html .css .scss .sass .less .styl .svx .pcss .postcss .sss .stylus
   .ts .js .mjs .cjs .mts .cts .jsx .tsx .vue .json .svg
 )
 is_source() {
-  local p="$1" e
+  # Lowercased HERE, not at the call sites, because two of the three forgot to.
+  # `state_dir_hides_source` lowercased and the two `walk_hidden_dir` consumers
+  # did not, so `Modal.SVELTE` in any ignored directory outside the state dir
+  # escaped -- and on the case-insensitive APFS this repo lives on, the
+  # lowercase specifier a developer naturally writes resolves to it, so vite
+  # compiled and shipped it. Build-proven, and `--grounds formatting-only`
+  # recorded cleanly over it.
+  #
+  # A comment on the state-dir guard used to justify its own lowercasing by
+  # saying `renders()` would forbid waiving the identical file anywhere else.
+  # That was false: `renders()` never sees an ignored directory's contents,
+  # because the decision to expand the directory at all is made upstream by
+  # THIS predicate. One place to lowercase means the three cannot disagree
+  # again.
+  local p e
+  p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   for e in "${IS_SOURCE_EXT[@]}"; do
     case "$p" in *"$e") return 0 ;; esac
   done
@@ -279,6 +415,254 @@ is_hashable() {
   return 0
 }
 
+# True when $1 is one of the denied paths in $2... , or sits underneath one.
+#
+# DIRECTION IS THE WHOLE HAZARD HERE, and getting it backwards is a fail-OPEN.
+# A path is denied only when it IS a denied path or lives UNDER one. The
+# reverse test -- dropping a path because a denied path lives under IT --
+# would drop an ignored `.claude/` on account of `.claude/.review-board-state`
+# and take `.claude/hooks`, this gate's own definition, out of the hash with it.
+# So an ancestor of a denied path is deliberately KEPT and left to be walked.
+#
+# Trailing slashes are stripped from both sides because `git status
+# --ignored=matching` reports a collapsed directory as `foo/` while the pathspec
+# that named it has no slash. This is DEFENSIVE, not load-bearing, and an
+# earlier version of this comment claimed otherwise -- that without the strip
+# "the filter is inert in exactly the case it exists for", which is false and
+# was caught by building the strip-less variant: the suite stays fully green and
+# `path_is_denied '.claude/.review-board-state/' '.claude/.review-board-state'`
+# still answers denied, because the `"$__d"/*` arm below matches `foo/` against
+# `foo/*` with `*` binding the empty string. What the strip actually buys is a
+# pathspec spelled WITH a trailing slash matching a path below it (`foo/bar.ts`
+# against a deny of `foo/`), which no call site uses today. Kept because it is
+# free; described honestly because a false claim about what a line is holding up
+# is how the next reader deletes the wrong one.
+#
+# Patterns are QUOTED inside `case` so a denied path containing a glob
+# character matches literally rather than as a pattern -- the same reason the
+# symlink-escape block quotes its own `${__d#":(exclude)"}`.
+path_is_denied() {
+  local __p="${1%/}" __d
+  shift
+  for __d in "$@"; do
+    __d="${__d%/}"
+    [ -z "$__d" ] && continue
+    [ "$__p" = "$__d" ] && return 0
+    case "$__p" in "$__d"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Why the state directory cannot be cleared, as one `<reason>:<path>` line, or
+# nothing. Reasons: `source`, `unreadable`, `deep`, `newline`.
+#
+# `path_is_denied` making WORK_DENY real on the ignored-content walk closed a
+# livelock and, on its own, opened the one hole this file already learned not to
+# leave: `.claude/.review-board-state` is the ONLY directory in WORK_DENY, and a
+# denied directory the bundler can resolve an import into is verbatim the `docs/`
+# mistake WORK_DENY's own comment records. Demonstrated, not theorised -- an
+# `Evil.svelte` written here stopped moving the hash AND dropped out of
+# WAIVER_FORBIDDEN, so one board round on a tracked `import` line bought
+# unlimited unreviewed edits to a component vite still bundles, SSRs and
+# hydrates, and `--grounds formatting-only` would be recorded over it.
+#
+# Refusing is both the fail-closed answer and the ACTIONABLE one, which is the
+# whole point: the pre-fix behaviour hashed such a file, so the gate drifted with
+# no explanation and every retry made it worse. That is the livelock CHR-19 set
+# out to kill. Naming the file kills it without trading it for a silent allow --
+# the same shape as the external-ignore guard, which also refuses by name rather
+# than hiding what it cannot review.
+#
+# ITS OWN WALK, deliberately NOT walk_hidden_dir, which is the mistake the first
+# version of this function made. That walk answers "what should I hash", so it
+# skips `is_artifact` paths and prunes `*/.git` -- both correct there and both
+# blind spots here, where the question is "is anything hiding". A review round
+# put a `role="dialog" aria-modal="true"` with no focus trap in
+# `.review-board-state/dist/`, watched this report nothing, and then watched a
+# real vite build server-render it. `dist`, `build`, `coverage`, `node_modules`,
+# `.svelte-kit`, `.cache`, `.output`, `.turbo` and `.git` all did it. There is no
+# artifact skip and no prune below for that reason; a directory NAME cannot be
+# evidence about content the gate has not looked at.
+#
+# The bounds come with it rather than being inherited. walk_hidden_dir's callers
+# get depth and readability refusals from compute_work_hash's bounds loop, and
+# denying the state dir from that loop is exactly what removed them -- a
+# component at depth 13, or behind a `chmod 111` subdirectory, went from a named
+# refusal at 0261ac8 to silence. `find`'s stderr is swallowed, so an unreadable
+# directory is byte-identical on stdout to an empty one; both are checked here,
+# before any conclusion is drawn from an empty walk.
+#
+# NO file cap, unlike walk_hidden_dir. That cap exists because that walk reads
+# CONTENTS; this one early-exits on the first hit and reads none. A cap here
+# would be the one refusal this tool could inflict on itself, since the sign-off
+# flow grows this directory by up to two files a round.
+#
+# NOT conditional on the directory being ignored. Unignored, it is excluded from
+# the diff by the pathspec instead (which git honours for `git add`), so a source
+# file here is invisible in that configuration too -- pre-fix included.
+#
+# Case is handled inside `is_source` itself now. It used to be handled here and
+# only here, which left the two `walk_hidden_dir` consumers case-sensitive and
+# `Modal.SVELTE` free in every other ignored directory -- and the comment that
+# lived here justified the arrangement with a claim about `renders()` that was
+# simply false. See is_source.
+STATE_DIR_MAX_DEPTH=12
+state_dir_hides_source() {
+  # `[ -d ]` is a STAT, and an ACL denying `readattr` on the state directory
+  # itself makes every stat-based test answer false -- so a directory that is
+  # right there, holding a component the bundler reads by exact path, reports as
+  # simply absent and this function returns "nothing here". Distinguish the two
+  # by asking the PARENT for its entries: readdir supplies names without
+  # stat'ing them, so a glob names the directory even when nothing can stat it.
+  # Absent for real matches nothing and still returns quietly, which is the arm
+  # that matters -- a false refusal on a fresh checkout is the livelock this
+  # whole task exists to remove.
+  if [ ! -d "$STATE_DIR" ]; then
+    local __e
+    for __e in "$(dirname "$STATE_DIR")"/.* "$(dirname "$STATE_DIR")"/*; do
+      if [ "$__e" = "$STATE_DIR" ]; then
+        printf 'unreadable:%s\n' "$STATE_DIR"
+        return 0
+      fi
+    done
+    return 0
+  fi
+  # NO permission probe here, deliberately, and this is the third design. It
+  # went `-perm` (mode bits), then `-perm` plus a per-directory access(2) test,
+  # and each version was defeated by an ACL one verb further out: `deny list`
+  # beat mode bits, `deny readattr` beat access(2) as well -- because `find`
+  # then cannot even classify the entry, so `-type d` never names the directory
+  # for a per-directory test to run on. Chasing mechanisms was the mistake.
+  #
+  # Asking `find` whether it FINISHED (below, via its exit status) covers all of
+  # them -- `chmod 000`, `111`, `666`, `deny list`, `deny readattr` -- EXCEPT at
+  # the walk's own `-maxdepth`, where `find` never opens the directory and four
+  # of the five exit 0. The depth walk goes one level further and is what closes
+  # that; an earlier version of this comment said "subsumes all of them" flat and
+  # a reviewer refuted it by measuring each shape at depths 1, 11 and 12.
+  #
+  # Deleting the access(2) loop and both `-perm` arms alongside this was
+  # justified as "unpinnable redundancy". They were unpinnable, NOT redundant --
+  # removing production code the test environment cannot reach is the same
+  # disease as writing production code to satisfy a test, pointed the other way,
+  # and the boundary gap above is what it cost. What makes the deletion
+  # defensible is the boundary check, not the argument given for it at the time.
+
+  # NOT two -maxdepth counts, which is what this was and what the comment here
+  # used to explain. Two walks counting a moving tree race against each other,
+  # and re-running both on a mismatch re-rolls the same dice -- measured at 25
+  # false "nests deeper" refusals out of 25 against a Playwright-shaped writer.
+  # `-mindepth` is still unusable (BSD find silently drops `-prune` the moment
+  # it appears anywhere in the expression), so depth is derived from the walk's
+  # own output instead: the deepest path it printed, by separator count.
+  # The DEEPER walk's exit status is captured, and it is the only thing that
+  # sees the boundary. `find` never OPENS a directory sitting at exactly
+  # `-maxdepth`, so a denial that blocks only descent -- `chmod 000`, `111`,
+  # `666`, an ACL denying `list` -- lets the `-type f` walk below exit 0 with the
+  # directory's contents silently missing. Measured across depths 1, 11 and 12:
+  # all four exit 1 at 1 and 11 and 0 at exactly 12, on BSD find and on bfs
+  # alike, so it is a property of `-maxdepth` rather than of one binary. Only
+  # `readattr` survives there, because classifying an entry for `-type f` needs
+  # a stat. This walk goes one level deeper and therefore does open it.
+  # ONE walk, both depths derived from its own output by counting separators.
+  # Two sequential walks counting a moving tree is a race, and re-running both
+  # on a mismatch just re-rolls the same dice: against a Playwright-shaped
+  # writer in an ignored directory only four segments deep, a reviewer measured
+  # 25 false "nests deeper" refusals out of 25 at sustained write rate -- the
+  # unactionable livelock CHR-19 exists to remove, restored at 100% by the fix
+  # meant to close it. One walk cannot disagree with itself.
+  #
+  # The walk goes one level PAST the bound, which is also the only walk that
+  # opens a directory sitting at exactly the bound -- `find` never opens one at
+  # `-maxdepth`, so a denial that blocks only descent exits 0 there. Its status
+  # answers both questions.
+  local __dec_file __dec __deepest
+  __dec_file=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
+  __deepest=$({ find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print 2>/dev/null; printf '%s' "$?" > "$__dec_file"; } \
+    | awk -v root="$STATE_DIR" 'BEGIN{m=0} {n=gsub("/","/"); if (n>m) m=n} END{print m}')
+  __dec=$(cat "$__dec_file" 2>/dev/null)
+  rm -f "$__dec_file" 2>/dev/null
+  if [ "${__dec:-1}" != "0" ]; then
+    if ! find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print >/dev/null 2>&1; then
+      printf 'unreadable:%s\n' "$STATE_DIR"
+      return 0
+    fi
+  fi
+  # The root itself contributes its own separators, so the bound is measured
+  # relative to it rather than absolutely.
+  local __root_seps
+  __root_seps=$(printf '%s' "$STATE_DIR" | awk '{print gsub("/","/")}')
+  if [ "$((__deepest - __root_seps))" -gt "$STATE_DIR_MAX_DEPTH" ]; then
+    printf 'deep:%s\n' "$STATE_DIR"
+    return 0
+  fi
+
+  # BUFFERED and retried, exactly like walk_hidden_dir, and for the reason that
+  # function's comment gives: an earlier version re-probed readability while
+  # keeping the FAILED walk's output, so one transient failure over a live
+  # `Evil.svelte` in this directory reported nothing, flipped the gate from deny
+  # to allow, and let `--grounds formatting-only` be recorded. Only the output
+  # of a walk that finished may be used.
+  local __p __hit="" __try __buf
+  for __try in 1 2; do
+    __buf=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
+    find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 2>/dev/null > "$__buf"
+    [ $? = 0 ] && break
+    rm -f "$__buf" 2>/dev/null
+    __buf=""
+  done
+  if [ -z "$__buf" ]; then
+    printf 'unreadable:%s\n' "$STATE_DIR"
+    return 0
+  fi
+  while IFS= read -r -d '' __p; do
+    [ -z "$__p" ] && continue
+    [ -n "$__hit" ] && continue
+    # A newline in the name cannot be reported as one line, and naming the
+    # directory instead keeps the refusal true where naming the file would
+    # corrupt it -- the same trade the walk sentinels make.
+    case "$__p" in
+      *$'\n'*) __hit="newline:$STATE_DIR"; continue ;;
+    esac
+    if is_source "$__p"; then __hit="source:$__p"; fi
+  done < "$__buf"
+  rm -f "$__buf" 2>/dev/null
+  [ -n "$__hit" ] && { printf '%s\n' "$__hit"; return 0; }
+  return 0
+}
+
+# Turns one state_dir_hides_source line into the sentence a person acts on.
+# Separate from the detection so the two refusal sites cannot word it two ways,
+# and so a reason can never reach a user as a bare token: an earlier version
+# printed the walk's own `__WALK_TRUNCATED__` sentinel straight into the message
+# as though it were a filename, in a fix whose stated rationale is that a named
+# refusal is actionable.
+state_dir_refusal() {
+  local __reason="${1%%:*}" __path="${1#*:}" __verb="$2"
+  case "$__reason" in
+    source)
+      printf '%s holds source %s: %s. Nothing that renders, or that decides what renders, may live in the board'"'"'s own state directory. Move it into the tree, where it is reviewable.' \
+        "$STATE_DIR" "$__verb" "$__path" ;;
+    unreadable)
+      printf '%s cannot be read, so this gate cannot tell whether source hides in it. Fix its permissions.' "$__path" ;;
+    deep)
+      printf '%s nests deeper than %s levels, so this gate cannot tell whether source hides down there. Flatten it, or move that content out of the state directory.' \
+        "$__path" "$STATE_DIR_MAX_DEPTH" ;;
+    newline)
+      printf '%s contains a file whose name has a literal newline byte, which this gate cannot safely name. Rename it, or move that content out of the state directory.' "$__path" ;;
+    # Deliberately does NOT interpolate "$1". This arm is unreachable from any
+    # reason the detector emits, so it exists for a reason added later -- and
+    # echoing an unrecognised token verbatim is exactly how `__WALK_TRUNCATED__`
+    # once reached a person where a filename belongs. A reviewer proved that
+    # live by making the detector emit a sentinel as its reason and watching it
+    # surface in the sentence while the probe named for that property stayed
+    # green. Unrecognised means the gate is broken, and saying so is the whole
+    # of what a reader can act on.
+    *)
+      printf '%s could not be evaluated: this gate emitted a refusal reason it does not recognise, which is a defect in the gate itself rather than in the tree. Report it.' "$STATE_DIR" ;;
+  esac
+}
+
 # Prints "!! "-prefixed paths from `git status --porcelain --ignored=matching`
 # with the prefix stripped, one per output line -- using -z on the git side
 # to correctly read a path containing a literal `"`, `\`, tab, or other
@@ -305,18 +689,64 @@ is_hashable() {
 #
 # Optional leading `-C <dir>` runs against that repo instead of the current
 # one (an embedded gitlink or a linked worktree), matching git's own flag.
+#
+# The `:(exclude)` pathspecs callers pass are honored by git for an
+# individually-named FILE and NOT for a collapsed ignored DIRECTORY:
+# `--ignored=matching` reports such a directory as one entry and emits that
+# entry whole regardless of any exclude pathspec -- confirmed against git
+# 2.55.0 in all three spellings (bare, trailing slash, `/**`), with
+# `:(exclude)CLAUDE.md` as a working control on a file. So `WORK_DENY` was
+# passed at all three call sites and did nothing for `.claude/.review-board-
+# state/`, which stayed out of the hash only because `is_source` happens to
+# reject `.signoff` and the extensionless `last-cleared`. A `.ts` written
+# there DID move the hash, a rewrite moved it again, and the same file one
+# level down in `signoffs/` moved it a third time. Fails CLOSED -- such a file
+# gets hashed rather than hidden -- so the risk was the livelock class the
+# STATE_DIR guard in compute_work_hash exists to diagnose, not an unreviewed
+# component reaching main.
+#
+# Applied HERE rather than at the three call sites, so the exclusion is real
+# once instead of three times and a fourth call site cannot be added without
+# it -- the same reason walk_hidden_dir is THE ONE WALK and
+# ignore_source_is_external is one function. The deny set is DERIVED from the
+# pathspecs actually passed, not a second copy of WORK_DENY, so it cannot
+# drift from the list it mirrors. Only the literal `:(exclude)<path>` form
+# yields a deny prefix; a positive pathspec (`.`) or a magic form this does
+# not recognize yields none, which leaves today's over-inclusive behavior
+# rather than guessing at a bound. The two `-C` call sites pass no excludes at
+# all, so this is a no-op for them by construction.
 ignored_matching_paths() {
-  local __raw __stripped __repo=""
+  local __raw __stripped __repo="" __arg
+  local -a __deny=()
   if [ "$1" = "-C" ]; then
     __repo="$2"
     shift 2
   fi
+  for __arg in "$@"; do
+    # Quoted: unquoted, bash reads `(` as pattern syntax and strips nothing.
+    case "$__arg" in
+      ':(exclude)'*) __deny[${#__deny[@]}]="${__arg#":(exclude)"}" ;;
+    esac
+  done
   git ${__repo:+-C "$__repo"} -c core.fsmonitor=false -c core.quotePath=false \
       -c status.showUntrackedFiles=all status --porcelain -z --ignored=matching -- "$@" 2>/dev/null |
     while IFS= read -r -d '' __raw; do
       __stripped="${__raw#"!! "}"
       [ "$__stripped" = "$__raw" ] && continue
       [ -z "$__stripped" ] && continue
+      # BEFORE the newline refusal, not after: a denied path is not work, and
+      # refusing over one would block on the gate's own state directory --
+      # an unactionable message, which is the livelock class this filter is
+      # closing rather than a safety check worth keeping there.
+      #
+      # `${#__deny[@]}` guard, not a bare `"${__deny[@]}"`: stock macOS
+      # /bin/bash (3.2) treats expanding an EMPTY array under `set -u` as an
+      # unbound variable and dies, which at the two `-C` call sites -- the
+      # ones that pass no excludes -- would take out the gitlink and worktree
+      # checks entirely.
+      if [ ${#__deny[@]} -gt 0 ] && path_is_denied "$__stripped" "${__deny[@]}"; then
+        continue
+      fi
       case "$__stripped" in
         *$'\n'*)
           printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
@@ -463,7 +893,19 @@ report_symlink_escape() {
 # no such backstop.
 renders() {
   local p pattern
-  p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  # Leading `./` stripped, because `walk_hidden_dir` adds one to every path it
+  # emits (the dash-prefix fix) and `waiver_forbidden_paths` feeds those paths
+  # straight in here. The `src/` and `static/` PREFIX arms therefore matched
+  # nothing that came from a walk: `renders 'src/routes/x/+page.ts'` answered
+  # forbidden while `renders './src/routes/x/+page.ts'` answered waivable. With
+  # this repo's own unanchored `tmp/` ignore rule, two brand-new SvelteKit load
+  # functions under `src/routes/tmp/` -- one of them turning SSR off -- recorded
+  # a `--grounds formatting-only` waiver with no reviewer. `.svelte` survived on
+  # its suffix arm; `.ts`, `.js`, `.json` and every `static/` asset did not.
+  # Normalised HERE rather than at the call sites, for the same reason
+  # `is_source` lowercases here: three call sites, and only some would remember.
+  p="${1#./}"
+  p=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
   for pattern in "${WAIVER_NEVER[@]}"; do
     case "$pattern" in
       */) case "$p" in "$pattern"*) return 0 ;; esac ;;
@@ -552,6 +994,14 @@ compute_work_hash() {
       WORK_ERROR="${STATE_DIR} is hidden by an ignore source outside the work tree, which would make every sign-off invalidate itself. Move that rule into .gitignore, or stop ignoring the state directory."
       return 1
     fi
+  fi
+
+  # ...and must not become a hiding place either. See state_dir_hides_source.
+  local __state_src
+  __state_src=$(state_dir_hides_source)
+  if [ -n "$__state_src" ]; then
+    WORK_ERROR=$(state_dir_refusal "$__state_src" "this gate would otherwise stop measuring")
+    return 1
   fi
 
   # Two more places work hides that this cannot enumerate, so it refuses rather
@@ -837,8 +1287,15 @@ compute_work_hash() {
   # exceed it today) or containing one unreadable file bricked the gate with
   # "flatten it", even though walk_hidden_dir prunes node_modules/.svelte-kit
   # entirely and would never have descended there.
-  local __prune_clause=(-path '*/.git' -o \( \( -name node_modules -o -name .svelte-kit \) \
-    ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \))
+  # WALK_PRUNE_CLAUSE, not a third copy. This was spelled out here as well as
+  # in walk_hidden_dir, with a comment promising the two matched -- and when the
+  # walk's `.git` arm was narrowed to real repositories, this copy kept the bare
+  # `-path '*/.git'` and the promise silently became false. A component parked
+  # under a `.git`-NAMED directory past the depth bound was then pruned by these
+  # probes and cut off by the walk's own `-maxdepth`, so neither looked and
+  # neither refused. Verbatim the lesson `ignore_source_is_external` records
+  # about being written three times and ordered correctly twice.
+  local __prune_clause=("${WALK_PRUNE_CLAUSE[@]}")
   while IFS= read -r __hidden_dir; do
     [ -z "$__hidden_dir" ] && continue
     if [ "$__hidden_dir" = "$NEWLINE_IN_PATH_SENTINEL" ]; then
@@ -877,12 +1334,32 @@ compute_work_hash() {
     # tree reaches (at least) depth 13 -- an ancestor DIRECTORY of anything
     # deeper still is itself present there, so this needs no -type filter to
     # catch trees that go past depth 13.
-    local __d12 __d13
-    __d12=$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-        -maxdepth 12 -print 2>/dev/null | wc -l)
-    __d13=$(find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
-        -maxdepth 13 -print 2>/dev/null | wc -l)
-    if [ "$__d13" -gt "$__d12" ]; then
+    # ONE walk, both answers from its own output: the deepest path it saw, and
+    # whether it finished. Two sequential counts of a moving tree race, and
+    # re-measuring on a mismatch just re-rolls the same dice -- a reviewer
+    # measured 25 false "nests deeper" refusals out of 25 against a
+    # Playwright-shaped writer in an ignored directory only four segments deep,
+    # on this repo's own gitignored `test-results/`. That is the unactionable
+    # livelock CHR-19 exists to remove, restored at 100% by the fix meant to
+    # close it. One walk cannot disagree with itself.
+    #
+    # The walk goes one level PAST the bound, which is also the only walk that
+    # opens a directory sitting at exactly the bound -- `find` never opens one
+    # there, so a denial blocking only descent exits 0. Its status answers that.
+    local __d13ec_file __d13ec __deepest __root_seps
+    __d13ec_file=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a temporary file"; return 1; }
+    __deepest=$({ find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o \
+        -maxdepth 13 -print 2>/dev/null; printf '%s' "$?" > "$__d13ec_file"; } \
+      | awk 'BEGIN{m=0} {n=gsub("/","/"); if (n>m) m=n} END{print m}')
+    __d13ec=$(cat "$__d13ec_file" 2>/dev/null)
+    rm -f "$__d13ec_file" 2>/dev/null
+    # Trailing slashes stripped first: `git status --ignored=matching` reports a
+    # collapsed directory as `tmp/`, so the root carries one more separator than
+    # its paths imply and every depth came out one too shallow -- a component at
+    # exactly the bound+1 stopped refusing. Caught by the pre-existing depth
+    # probe going red, which is what it is for.
+    __root_seps=$(printf '%s' "${__hidden_dir%"${__hidden_dir##*[!/]}"}" | awk '{print gsub("/","/")}')
+    if [ "$((__deepest - __root_seps))" -gt 12 ]; then
       WORK_ERROR="${__hidden_dir} nests deeper than this gate walks, so it cannot tell whether work hides down there. Flatten it, or move that content out of the work tree."
       return 1
     fi
@@ -894,23 +1371,64 @@ compute_work_hash() {
       WORK_ERROR="${__hidden_dir} cannot be read, so this gate cannot tell whether it hides work. Fix its permissions, or move it out of the work tree."
       return 1
     fi
+    # AFTER the permission probes above, deliberately: they cover the shapes
+    # they were written for and say so in their own words, and this catches only
+    # what they cannot see -- a denial at exactly the shallower bound, where the
+    # `-type f` walk never opens the directory and so exits 0. Placing it first
+    # replaced three established diagnostics with this one and reddened their
+    # probes, which is how the ordering was found.
+    if [ "${__d13ec:-1}" != "0" ] && \
+       ! find -L "$__hidden_dir" \( "${__prune_clause[@]}" \) -prune -o -maxdepth 13 -print >/dev/null 2>&1; then
+      WORK_ERROR="${__hidden_dir} could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
+      return 1
+    fi
+    # What the prune dropped, scanned rather than trusted. See pruned_git_source.
+    local __pg
+    __pg=$(pruned_git_source "$__hidden_dir")
+    if [ -n "$__pg" ]; then
+      WORK_ERROR="${__pg} is source inside a pruned .git directory, which this gate does not walk and cannot review. A repository's own internals are not review material; anything else must not live behind that name. Move it into the tree."
+      return 1
+    fi
     __walk_out=$(walk_hidden_dir "$__hidden_dir")
     # NO admission predicate here, deliberately. Deciding whether to verify the
     # bound by inspecting contents you have truncated is circular, and the
     # narrower predicate was applied to the directory PATH while the enumeration
     # below applies its own to the FILES -- so `tmp/` was checked by neither.
-    case "$__walk_out" in *"$NEWLINE_IN_PATH_SENTINEL"*)
+    # `path_is_denied` filtering WORK_DENY paths out upstream of this loop is
+    # not that predicate returning: it is a scope decision made on the path
+    # alone, never on contents, and it only ever removes paths this file has
+    # already declared unreviewable. It DOES cost the state directory these
+    # depth and readability bounds, and an earlier version of this comment
+    # called that "correct, since nothing in it is work" -- which the guard
+    # eighty lines above flatly contradicts, since its whole premise is that
+    # source can appear there. A review round proved the cost real: a component
+    # at depth 13, and one behind a `chmod 111` subdirectory, both went from a
+    # named refusal to silence. state_dir_hides_source carries its own copies of
+    # both bounds for that reason; they are not inherited from here.
+    # WHOLE-LINE matches, not substring. `case "$blob" in *"$SENTINEL"*` over a
+    # multi-line blob is satisfiable by a FILENAME: a file called
+    # `prefix__WALK_UNREADABLE__suffix.txt` in any ignored directory forged a
+    # refusal naming a condition that did not exist, unclearable by the remedy
+    # the message gave -- the unactionable livelock this task exists to remove,
+    # tree-wide. The sentinels are emitted as complete lines by construction, so
+    # a whole-line test loses nothing and cannot be spoofed by a substring.
+    if printf '%s\n' "$__walk_out" | grep -qxF "$NEWLINE_IN_PATH_SENTINEL"; then
       WORK_ERROR="${__hidden_dir} contains a file whose name has a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
-      return 1 ;;
-    esac
-    case "$__walk_out" in *"$WALK_TRUNCATED_SENTINEL"*) __trunc=1 ;; *) __trunc="" ;; esac
+      return 1
+    fi
+    if printf '%s\n' "$__walk_out" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+      WORK_ERROR="${__hidden_dir} could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
+      return 1
+    fi
+    if printf '%s\n' "$__walk_out" | grep -qxF "$WALK_TRUNCATED_SENTINEL"; then __trunc=1; else __trunc=""; fi
     if [ -n "$__trunc" ]; then
       WORK_ERROR="${__hidden_dir} hides more than ${WALK_HIDDEN_CAP} files from this gate, which is more than it will read on every stop. Narrow the ignore rule, or move that content out of the work tree."
       return 1
     fi
   done <<< "$(ignored_matching_paths . "${WORK_DENY[@]}")"
 
-  local externally_hidden
+  local externally_hidden file_unreadable
+  file_unreadable=$(mktemp 2>/dev/null) || { WORK_ERROR="could not create a file-read status marker"; return 1; }
   externally_hidden=$(
     ignored_matching_paths . "${WORK_DENY[@]}" \
       ':(exclude)node_modules' ':(exclude).svelte-kit' ':(exclude)dist' ':(exclude)build' \
@@ -947,6 +1465,7 @@ compute_work_hash() {
             # four config names. A hidden directory of .ts/.js/.json was invisible.
             if [ -n "$(walk_hidden_dir "$f" | while IFS= read -r __i; do
                  [ "$__i" = "$NEWLINE_IN_PATH_SENTINEL" ] && { echo hit; break; }
+                 [ "$__i" = "$WALK_UNREADABLE_SENTINEL" ] && { echo hit; break; }
                  is_source "$__i" && { echo hit; break; }
                done)" ]; then __external=1; fi
           elif renders "$f"; then
@@ -977,7 +1496,7 @@ compute_work_hash() {
               # emitted a truncation marker at exactly-cap where none occurred.
               # Substring test via parameter expansion, not `case`, for the same
               # bash-3.2-inside-$(...) reason as above.
-              if [ "${__names#*"$WALK_TRUNCATED_SENTINEL"}" != "$__names" ]; then
+              if printf '%s\n' "$__names" | grep -qxF "$WALK_TRUNCATED_SENTINEL"; then
                 printf 'externally-hidden-truncated:%s\n' "$f"
               fi
               # Propagated raw, not folded into a labelled marker like the
@@ -985,27 +1504,46 @@ compute_work_hash() {
               # subshell exits, since WORK_ERROR set in here is discarded)
               # does an exact match on the bare sentinel value, shared with
               # every other site that can emit it.
-              if [ "${__names#*"$NEWLINE_IN_PATH_SENTINEL"}" != "$__names" ]; then
+              if printf '%s\n' "$__names" | grep -qxF "$NEWLINE_IN_PATH_SENTINEL"; then
                 printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
+              fi
+              if printf '%s\n' "$__names" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+                printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
               fi
               printf '%s\n' "$__names" | while IFS= read -r inner; do
                 [ -z "$inner" ] && continue
                 [ "$inner" = "$WALK_TRUNCATED_SENTINEL" ] && continue
                 [ "$inner" = "$NEWLINE_IN_PATH_SENTINEL" ] && continue
-                if is_hashable "$inner"; then printf 'externally-hidden:%s\n' "$inner"
-                else printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(shasum -a 256 < "$inner" 2>/dev/null | cut -d' ' -f1)"
+                [ "$inner" = "$WALK_UNREADABLE_SENTINEL" ] && continue
+                # SIZE on the name line, because the bodies below are
+                # concatenated with no separator and the name
+                # lines carry no length. Two adjacent files in `LC_ALL=C` order
+                # could therefore trade content across their boundary -- one
+                # emptied, the other holding a `role="dialog"` with no focus
+                # trap -- and hash identically, so a four-PASS sign-off on the
+                # first state cleared the second. The content read is checked
+                # explicitly, so an ACL-denied body cannot hash as empty.
+                if is_hashable "$inner"; then
+                  __size=$(wc -c < "$inner" 2>/dev/null) || { printf 1 > "$file_unreadable"; continue; }
+                  printf 'externally-hidden:%s:%s\n' "$inner" "$(printf '%s' "$__size" | tr -d ' ')"
+                else
+                  __blob=$(shasum -a 256 < "$inner" 2>/dev/null) || { printf 1 > "$file_unreadable"; continue; }
+                  printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(printf '%s' "$__blob" | cut -d' ' -f1)"
                 fi
               done
               printf '%s\n' "$__names" | while IFS= read -r inner; do
-                [ -n "$inner" ] && is_hashable "$inner" && printf '%s\0' "$inner"
-              done | xargs -0 cat 2>/dev/null
+                [ -n "$inner" ] && [ "$inner" != "$WALK_UNREADABLE_SENTINEL" ] \
+                  && [ "$inner" != "$WALK_TRUNCATED_SENTINEL" ] && [ "$inner" != "$NEWLINE_IN_PATH_SENTINEL" ] \
+                  && is_hashable "$inner" && { cat -- "$inner" 2>/dev/null || printf 1 > "$file_unreadable"; }
+              done
             elif [ -e "$f" ] && ! is_artifact "$f"; then
               if is_hashable "$f"; then
                 printf 'externally-hidden:%s\n' "$f"
-                cat -- "$f" 2>/dev/null
+                cat -- "$f" 2>/dev/null || printf 1 > "$file_unreadable"
               else
-                printf 'externally-hidden-blob:%s:%s\n' "$f" \
-                  "$(shasum -a 256 < "$f" 2>/dev/null | cut -d' ' -f1)"
+                __blob=$(shasum -a 256 < "$f" 2>/dev/null) || printf 1 > "$file_unreadable"
+                [ -n "${__blob:-}" ] && printf 'externally-hidden-blob:%s:%s\n' "$f" \
+                  "$(printf '%s' "$__blob" | cut -d' ' -f1)"
               fi
             fi
         fi
@@ -1015,6 +1553,16 @@ compute_work_hash() {
     WORK_ERROR="an ignored path contains a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
     return 1
   fi
+  if printf '%s' "$externally_hidden" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+    WORK_ERROR="an ignored directory could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
+    return 1
+  fi
+  if [ -s "$file_unreadable" ]; then
+    rm -f "$file_unreadable" 2>/dev/null
+    WORK_ERROR="an ignored file could not be read, so this gate cannot tell whether reviewable content hides in it. Fix its permissions, or move it out of the work tree."
+    return 1
+  fi
+  rm -f "$file_unreadable" 2>/dev/null
 
   # --no-ext-diff --no-textconv on every diff below: a diff driver rewrites the
   # rendered output this hash is built from, and a textconv driver omits changed
@@ -1101,6 +1649,20 @@ waiver_forbidden_paths() {
   # Not $(work_baseline): its WORK_ERROR assignment must survive.
   work_baseline || return 1
   baseline="$WORK_BASELINE"
+
+  # Same refusal compute_work_hash makes, repeated here rather than inherited.
+  # It IS reached anyway today -- review-board-signoff.sh runs compute_work_hash
+  # after this clears -- but that is a property of the CALLER's ordering, and the
+  # waiver half is the live half: WAIVER_FORBIDDEN going empty is what lets
+  # `--grounds formatting-only` be recorded over a component. Depending on a
+  # neighbouring script's call order for a fail-closed guarantee is exactly the
+  # coincidence this file's own comments refuse elsewhere.
+  local __state_src
+  __state_src=$(state_dir_hides_source)
+  if [ -n "$__state_src" ]; then
+    WORK_ERROR=$(state_dir_refusal "$__state_src" "a waiver cannot cover")
+    return 1
+  fi
 
   # A stash can carry a whole component and this cannot cheaply enumerate one,
   # so it refuses rather than waives what it cannot see.
@@ -1233,6 +1795,7 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
             # four config names. A hidden directory of .ts/.js/.json was invisible.
             if [ -n "$(walk_hidden_dir "$f" | while IFS= read -r __i; do
                  [ "$__i" = "$NEWLINE_IN_PATH_SENTINEL" ] && { echo hit; break; }
+                 [ "$__i" = "$WALK_UNREADABLE_SENTINEL" ] && { echo hit; break; }
                  is_source "$__i" && { echo hit; break; }
                done)" ]; then __external=1; fi
           elif renders "$f"; then
@@ -1259,6 +1822,10 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
             # on that coincidence. The sentinel travels through instead, same
             # as compute_work_hash's enumeration, and is checked once this
             # subshell exits (see below) -- WORK_ERROR set in here is discarded.
+            # Same pruned-`.git` scan the hash path makes, emitted as a path so
+            # WAIVER_NEVER can judge it. Repeated rather than inherited, for the
+            # reason the state-dir guard is: the waiver half is the live half.
+            pruned_git_source "$f"
             walk_hidden_dir "$f"
           else printf '%s\n' "$f"
           fi
@@ -1271,6 +1838,10 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
   fi
   if printf '%s' "$hidden" | grep -qxF "$NEWLINE_IN_PATH_SENTINEL"; then
     WORK_ERROR="an ignored path contains a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
+    return 1
+  fi
+  if printf '%s' "$hidden" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+    WORK_ERROR="an ignored directory could not be read all the way down, twice running, so a waiver cannot verify what hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
     return 1
   fi
   hidden=$(printf '%s' "$hidden" | grep -vxF "$WALK_TRUNCATED_SENTINEL")

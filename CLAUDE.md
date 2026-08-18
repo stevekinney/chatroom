@@ -383,6 +383,15 @@ permanent home for unreviewed components. Markdown under `.claude/agents` and `.
 reviewable work — editing an agent's operating instructions changes behavior, and calling that a
 documentation edit is how you talk yourself out of a review you owe.
 
+The state directory is on that list **conditionally**, for the same reason `docs` and `.vscode`
+came off it. Its own bookkeeping is out of scope, but a file `is_source` recognises there —
+anything that renders, or decides what renders — makes both `compute_work_hash` and
+`waiver_forbidden_paths` refuse by name rather than clear. It is the only directory still on the
+list, so excluding it unconditionally made it the next permanent hiding place: measured, an
+`Evil.svelte` written there stopped moving the work hash and dropped out of `WAIVER_FORBIDDEN`,
+so one board round on a tracked `import` line bought unlimited unreviewed edits to a component
+vite still bundles, SSRs and hydrates.
+
 Record a sign-off once all four have returned PASS, so there's still a durable trail even without a
 hook reading it:
 
@@ -409,7 +418,11 @@ anything touching a rendered surface — `WAIVER_NEVER` in `work-hash.sh` covers
 `.svelte`, `.html`, `.css`, the build config that decides what SSRs and how it hydrates
 (`vite.config.ts`, `svelte.config.js`, `postcss.config.cjs`, `tailwind.config.ts` — this repo has
 no `svelte.config.js`, so `vite.config.ts` is where the `sveltekit()` plugin actually lives), and
-`package.json` / `bun.lock`, which pin the component versions. That refusal is the
+`package.json` / `bun.lock`, which pin the component versions. It also covers every extension vite
+compiles as CSS — `.scss`, `.sass`, `.less`, `.styl`, `.stylus`, `.pcss`, `.postcss`, `.sss` — and
+`.svg`, which carries `role`, `aria-label` and `<title>`. Those nine were added after a `.pcss` in
+an ignored directory was build-proven into shipped CSS carrying `outline: none` on
+`:focus-visible`, waived cleanly under `formatting-only`. That refusal is the
 script declining to write a waiver file for you, not a gate stopping the edit — you can still skip
 recording anything and proceed unreviewed, which is exactly the discipline this section is asking
 you not to exercise. Waiving work that touches behavior is how this whole mechanism becomes

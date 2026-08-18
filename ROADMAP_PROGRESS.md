@@ -31,7 +31,7 @@ The review-board Stop gate blocks on entry to this session. The cause is not any
 
 What was ruled out before concluding the drift is mechanical rather than a content change:
 
-- No source file has an mtime later than the sign-off. `find . -newer .claude/.review-board-state/last-cleared` over the tree (excluding `node_modules`, `.git`, `.svelte-kit`, `test-results`) returns only a second sign-off file, which lives in the state directory and does not reach the hash — though for a different reason than assumed at the time; see the held-open finding at the end of this log.
+- No source file has an mtime later than the sign-off. `find . -newer .claude/.review-board-state/last-cleared` over the tree (excluding `node_modules`, `.git`, `.svelte-kit`, `test-results`) returns only a second sign-off file, which lives in the state directory and does not reach the hash. At the time that was true for an incidental reason rather than the assumed one; `CHR-19` below made `WORK_DENY` the operative reason, so the assumption is now correct as well as the conclusion.
 - Committing is not the cause. Verified directly in a throwaway repo using this repo's own `work-hash.sh`: a baseline commit, a dirty tree, hash; then commit that tree and hash again — identical both times (`df4ddbcb…`). `CLAUDE.md`'s claim that committing after a PASS does not invalidate it holds.
 - The hash is stable now: three consecutive `compute_work_hash` calls return the same value, so this is not a nondeterministic hash.
 - There are no stashes, no linked worktrees, and one ref.
@@ -42,7 +42,7 @@ Two sign-off files exist on disk with identical contents but differently-named k
 
 **Resolution: fold into B1's review with disclosure.** The sign-off flow is not structurally broken — verified end to end in a throwaway repo with this repo's own scripts: baseline, work, four `--pass` flags, and the gate then clears with no output. So the exact cause of the prior session's drift is unrecoverable without its tree, and chasing it further buys nothing. The round-7 diff at `HEAD` goes to the board as part of B1, disclosed in the brief rather than hidden in it, so the reviewers know which surface is new and which was reviewed before. A dedicated board round on 1,600 lines of already-reviewed hook internals is how this becomes round 8 and consumes the session.
 
-Along the way, one real defect surfaced and is **not** fixed here — see the note at the end of this log.
+Along the way, one real defect surfaced and is **not** fixed here — it was carried as a held-open finding and fixed later, under `CHR-19` below.
 
 ### B1: contract drift — `CA-1`, `CA-2`, `CA-3`, `CA-5`
 
@@ -65,7 +65,7 @@ Not started, when this was written. **Superseded** — the old `B2`–`B15` labe
 
 **Before B0/B1, on batch order and the blocked gate.** The advisor challenged the hash-drift diagnosis rather than the plan, pointing at one candidate not yet ruled out: that `WORK_DENY` is a git pathspec applied free to the diff but needing manual re-application on the ignored-content walk, which — if true for `.claude/.review-board-state/` — would mean recording a sign-off moves the hash away from the one just approved, and no board round could ever clear the gate. It gave the exact probe.
 
-The probe found a real defect but not that failure mode: a `.signoff` write leaves the hash untouched while a `.ts` with identical content in the same directory moves it. Three other things came from the same consultation and were adopted: fold the round-7 diff into B1 rather than spend a dedicated board round on it; time the e2e suite before B2 lands, since fifteen batches will pay it (40.2s, so B2's matrix is affordable); and probe upstream publish capability early rather than discovering at B15 that the loop cannot finish.
+The probe found a real defect but not that failure mode: a `.signoff` write leaves the hash untouched while a `.ts` with identical content in the same directory moves it. That defect was held open for several rounds and is fixed now — see the `CHR-19` section below. Three other things came from the same consultation and were adopted: fold the round-7 diff into B1 rather than spend a dedicated board round on it; time the e2e suite before B2 lands, since fifteen batches will pay it (40.2s, so B2's matrix is affordable); and probe upstream publish capability early rather than discovering at B15 that the loop cannot finish.
 
 ## Upstream detours
 
@@ -424,15 +424,144 @@ Both lived in the shared files they were forbidden to touch, which is the argume
 - **A TypeScript overload limit at 28 routes.** `resolve()` is typed with one overload per route, and TypeScript cannot distribute a union argument across overloads — so ``resolve(`/exercises/${slug}`)`` was passing the union of every slug to a function that accepts one route. It compiled while the union was small and broke at 28. Fixed by resolving each `href` from a literal at definition, which is strictly more checking: it immediately caught an entry the edit had missed.
 - **A lint false positive that followed.** `svelte/no-navigation-without-resolve` is syntactic and cannot trace the value back to its definition. Disabled for that one line with the reason written out, rather than switched off in config — the rule is right about every other anchor here.
 
-## Findings held open, not fixed
+## CHR-19: `WORK_DENY` now takes effect on the gate's ignored-content walk
 
-**`WORK_DENY` does not take effect on the gate's ignored-content walk.** `CLAUDE.md` asserted flatly that "`WORK_DENY` applies to the hidden-file enumeration as well as to the diff." That overstates the code. `.claude/.review-board-state/` stays out of the work hash only because `is_source` rejects the extensions it happens to contain (`.signoff`, and the extensionless `last-cleared`) — not because `WORK_DENY` excludes it.
+Held open through the sections above, and fixed on 2026-08-17 as its own scoped task. Kept as a record rather than deleted, because the shape of the defect — and of the two holes the obvious fixes opened — is the reusable part. Three board rounds, twelve reviewer-findings, and the fix ended up somewhere the issue did not ask for.
 
-**Root cause, corrected.** An earlier draft of this note said `WORK_DENY` "is not re-applied" on the walk. That is wrong and would have sent a fixer to the wrong line: it _is_ passed, at `work-hash.sh:911`, `:915`, and `:1213`. The actual failure is in git — `git status --ignored=matching` collapses an ignored directory into one entry, and `:(exclude)` does not suppress that collapsed entry. Two reviewers independently reached this same root cause, and all three pathspec forms (bare, trailing slash, `/**`) were tried against git 2.55.0 with `:(exclude)CLAUDE.md` as a working control. The fix is an explicit `WORK_DENY` prefix test on the walk, after `ignored_matching_paths` returns.
+**What was wrong.** `WORK_DENY` _was_ passed to `ignored_matching_paths` at all three of its call sites; the original note's citations, `work-hash.sh:911`, `:915` and `:1213`, were accurate against `0261ac8`, the revision they were taken at. The failure was in git: `git status --ignored=matching` collapses an ignored directory into a single entry and emits that entry whole regardless of any `:(exclude)` pathspec, in all three spellings (bare, trailing slash, `/**`), with `:(exclude)CLAUDE.md` as a working control on a _file_. Confirmed on two git versions (Homebrew 2.55.0 and Apple 2.50.1) and in the real repo; `--ignored=traditional` honours the exclude for the same directory. So `.claude/.review-board-state/` came back out of that function despite being denied, and stayed out of the hash only because `is_source` happens to reject `.signoff` and the extensionless `last-cleared`.
 
-Reproduced by writing into the state directory and recomputing the hash each time: a `.signoff` (and a `.md`) leaves the hash unchanged; a `.ts` with the same content moves it; the same file one level down in `signoffs/` moves it again; removing it returns to the original. The specific hash values are **tree-specific** and will not reproduce against any other tree state, so they are deliberately not quoted here — the _relation_ is what carries the finding, and both reviewers who checked it reproduced that relation with entirely different literal values.
+**The first fix opened a worse hole than it closed.** Filtering denied paths out of the walk made the exclusion real — and `.claude/.review-board-state` is the only _directory_ in `WORK_DENY`, so it immediately became the `docs/` hiding place that `WORK_DENY`'s own comment records as a mistake already made once. Measured both halves: an `Evil.svelte` written there moved the hash and appeared in `WAIVER_FORBIDDEN` before the change, and after it the hash was **unchanged** and `WAIVER_FORBIDDEN` was **empty**. One board round on a tracked `import` line would have bought unlimited unreviewed edits to a component vite still bundles, SSRs and hydrates, and `--grounds formatting-only` would have been recordable over it — and the waiver half is live machinery, unlike the unwired gate. A fail-**open**, in a file whose first design rule is "Fail closed. Any state this cannot evaluate is a BLOCK, never an allow."
 
-Nothing in the sign-off flow writes a source-extension file into that directory, so this is latent rather than live — but a source-extension file landing there would reopen the livelock class that `CLAUDE.md` says is closed. The failure direction is **fail-closed** — such a file gets hashed rather than hidden, so the risk is a livelock, not an unreviewed component reaching `main`. **Not fixed**, deliberately: it is not a `ROADMAP.md` item, the fix belongs in `work-hash.sh`'s walk rather than in prose, and gate surgery in this repo has a documented history of consuming whole sessions. `CLAUDE.md` now states the gap instead of the overclaim, so the next reader gets the true version. Fixing it properly is a separate, deliberately-scoped task.
+**The second fix opened a smaller one.** `state_dir_hides_source` closed the hole by refusing, but reused `walk_hidden_dir` — a walk built to answer _what should I hash_ — as a _presence_ check. Every bound that walk has became a blind spot: `-maxdepth 12`, the `is_artifact` skip, the `*/.git` prune, and `find`'s swallowed stderr. Two of those were regressions this work introduced, since denying the state dir from `compute_work_hash`'s bounds loop is what removed the depth and readability refusals it used to get: a component at depth 13, and one behind a `chmod 111` subdirectory, both went from a named refusal at `0261ac8` to silence, and a full four-`--pass` sign-off cleared over them. The artifact and `.git` shapes never worked, at `0261ac8` either — one reviewer built a scratch vite project and watched `.review-board-state/dist/Evil.svelte` server-render a `role="dialog" aria-modal="true"` with no focus trap while both paths reported nothing. A justification committed alongside the first version ("an unreadable one fails loudly in `review-board-signoff.sh`'s own `mkdir -p`") was simply false: that `mkdir -p` only touches `signoffs/`, so an unreadable sibling is never stat'd.
+
+**What shipped.** `path_is_denied` filters the walk as the issue asked. `state_dir_hides_source` carries **its own** walk — no artifact skip, no `.git` prune, its own depth and readability refusals, no file cap (it early-exits on the first hit and reads no contents, so the cap that protects the hashing walk would only be a refusal this tool could inflict on itself as the sign-off flow grows the directory), and lowercasing before `is_source` so `Evil.SVELTE` cannot escape a guard that `renders()` would enforce anywhere else. `state_dir_refusal` turns its `<reason>:<path>` line into a sentence, so an internal sentinel can never reach a person where a filename belongs — the first version printed `__WALK_TRUNCATED__` into the message as though it were one. Both `compute_work_hash` and `waiver_forbidden_paths` refuse, repeated rather than inherited, because today's coverage of the waiver path is a property of `review-board-signoff.sh`'s call order.
+
+**Two deviations from the issue's acceptance criteria**, stated rather than buried:
+
+- Criterion 1 asked for the prefix test "after `ignored_matching_paths` returns", which read literally means at the three call sites — but criterion 3 asked those call sites to stay unmodified, and both cannot hold at once. The filter went _inside_ the function, which satisfies the intent and criterion 3 literally, gets it right once instead of three times, and cannot be missed by a fourth call site later. The deny set is derived from the `:(exclude)` pathspecs actually passed rather than a second copy of `WORK_DENY`, so it cannot drift; the two `-C` call sites pass no excludes and are unaffected by construction.
+- Criterion 2 asked that a source-extension file written into `.claude/.review-board-state/` leave the hash **unchanged**. That is precisely the fail-open above, so it is not implemented. Bookkeeping written there leaves the hash unchanged — the criterion's actual purpose — and a _source_ file refuses by name. The issue's stated premise, that this defect "fails closed" so the only risk is livelock, is true of the defect and **not** of the fix it prescribes.
+
+**Fifty-four new assertions, and the mutations that redden them.** Units first, because this
+paragraph shipped a wrong count in four consecutive rounds: the suite prints one line per
+assertion, and a parameterized loop prints one per iteration, so a `for` over nine artifact names
+is one `ok` call site and nine assertions. Counted by running the suite at `0261ac8` and at `HEAD`
+and diffing the rosters — **117 → 171** — never by grepping call sites, which produced two of the
+four wrong figures. Every row is pasted output from one sweep in an isolated copy of the hooks,
+after a background sweep writing `work-hash.sh` concurrently with a foreground edit destroyed one.
+
+| mutation                                            | result   |
+| --------------------------------------------------- | -------- |
+| clean                                               | 171 / 0  |
+| pre-fix at `0261ac8`                                | 128 / 43 |
+| first `walk_hidden_dir`-based guard (`c7ac225`)     | 134 / 37 |
+| access(2)-based guard (`aeddf2f`)                   | 163 / 8  |
+| bare exit-status guard (`e2dfbe1`)                  | 164 / 7  |
+| state-dir guard neutered at both entry points       | 143 / 28 |
+| guard file walk bounded to `-maxdepth 1`            | 161 / 10 |
+| containment arm deleted                             | 170 / 1  |
+| containment reversed                                | 169 / 2  |
+| `${#__deny[@]}` empty-array guard removed           | 170 / 1  |
+| state-dir boundary check disabled                   | 170 / 1  |
+| tree-wide boundary check deleted                    | 170 / 1  |
+| one sentinel consumer reverted to a substring test  | 169 / 2  |
+| churn retry probe removed                           | 170 / 1  |
+| `is_source` stops lowercasing                       | 170 / 1  |
+| vite CSS set removed from `IS_SOURCE_EXT`           | 167 / 4  |
+| vite CSS set and `.svg` removed from `WAIVER_NEVER` | 162 / 9  |
+| `state_dir_refusal` newline arm deleted             | 170 / 1  |
+| root-stat arm always refuses (over-refusal)         | 90 / 81  |
+| pre-fix plus `.signoff` in `IS_SOURCE_EXT`          | 127 / 44 |
+
+**All 54 are reddened by at least one of those**, computed rather than asserted: the union of every
+mutation's failing-assertion names, normalised for the per-run `mktemp` paths two pre-existing
+probes embed in their own names, contains all 54. Earlier versions of this sentence claimed
+coverage a reviewer then disproved, twice. Two rows exist only because redundancy would otherwise
+hold a probe green: the over-refusal row for "a genuinely absent state dir does not provoke a
+refusal" (no other mutation reaches it, since every other one makes the guard refuse _less_), and
+the `${#__deny[@]}` row. A reviewer's own union found only three rows uniquely necessary — those
+two plus `containment reversed` — and specifically that the `.signoff` row is _not_ uniquely
+necessary for the bookkeeping probe, which the over-refusal row also reddens as collateral. An
+earlier version of this sentence said "three rows" and then enumerated six, bundling the four
+commit-checkout rows under a rationale that is not theirs: those measure what each successive
+design actually missed rather than what its author believed it caught.
+
+**Four claims this record made confidently and wrongly**, each caught by a reviewer, kept because the pattern is the lesson:
+
+- "Two go red pre-fix" when three did — disproved by the session's own earlier `118 passed, 3 failed`. Corrected, and then the corrected figure was wrong too ("five" when six did, at `c7ac225`). Two consecutive rounds of the same defect, in the document whose entire purpose is to be the durable record of the verification. The table above is measured output pasted in, not a count carried in prose.
+- `path_is_denied`'s docblock claimed that without its trailing-slash strip "the filter is inert in exactly the case it exists for". False: the strip-less variant stays fully green and still answers denied, because the `"$__d"/*` arm matches `foo/` with `*` binding the empty string. Defensive, not load-bearing, and now says so.
+- The explanation for why one probe's fixture reaches the "sits UNDER one" arm was wrong twice. It is not that git only fails on the entry that _is_ the excluded path — the probe's own `deny/sub/` is strictly below it and survives — and it is not the `.gitignore`'s nesting. The operative variable is **tracked content inside the excluded directory**, which forces git to descend past the pathspec prune; the nested `.gitignore` works because committing it puts tracked content there, and any tracked file does the same. Measured four ways. Worth knowing: the live repo's state dir is ignored whole and holds nothing tracked, so only the exact-match arm is reachable in production and the other is defensive coverage.
+- "Every one proven load-bearing" covered a probe no mutation reddens (above).
+
+One figure correction, attributed properly: the **CHR-19 issue** (not this note, which quoted no figure) said `grep -n WORK_DENY` returns 12. It returned 21 at `0261ac8` and 28 now.
+
+**The ACL chase, and why the third design is smaller than the first.** Rounds three and four spent
+themselves on one question: how does this gate know a directory it walked was actually readable?
+The answer went through three designs, and each of the first two was defeated by a macOS ACL one
+verb further out — `chmod +a "<user> deny ..."`, no root required.
+
+- `-perm` (mode bits) was beaten by `deny list`, which denies readdir while the mode still reads
+  `drwxr-xr-x`.
+- `-perm` plus a per-directory access(2) test was beaten by `deny readattr`, which denies stat, so
+  `find` cannot classify the entry at all: `-type d` never names the directory for a per-directory
+  test to run on, `-type f` never descends, and both `-maxdepth` counts agree so no depth refusal
+  fires. Two reviewers reached this independently, one demonstrating the whole consequence — gate
+  blocks, four `--pass` sign-offs record, gate allows, the hidden component is then _edited_ with
+  no board, gate still allows — and building the component with this repo's own vite to confirm
+  `aria-modal="true"` with no focus trap reached the bundle.
+
+The third design asks `find` whether it FINISHED, via its exit status. That covers all five —
+`chmod 000`, `111`, `666`, `deny list` and `deny readattr` — **except at the walk's own `-maxdepth`
+boundary**, where `find` never opens the directory and four of the five exit 0. An earlier version
+of this paragraph asserted "subsumes all of them" flat, and a reviewer refuted it by measuring each
+shape at depths 1, 11 and 12 on two `find` binaries. The boundary is covered by reading the exit
+status of the _deeper_ depth-probe walk, the only one that opens it.
+
+Deleting the access(2) loop and both `-perm` arms alongside that was justified here as "unpinnable
+redundancy", and that framing was wrong in a way worth keeping. They were **unpinnable, not
+redundant**: production code was removed because the test environment could not reach it, which is
+the same disease as writing production code to satisfy a test, pointed the other way — and the
+boundary regression above is what it cost. What makes the deletion defensible now is the boundary
+check, not the argument given for it at the time. A separate
+arm covers the state directory's own root, where `[ -d ]` is itself a stat and a `readattr` denial
+turned "this directory holds a component" into "there is no state directory"; it asks the parent
+for its entries, since readdir supplies names without stat'ing them, and is paired with a negative
+control because a false refusal on a fresh checkout is the livelock this task exists to remove.
+
+**A refutation this log got wrong, corrected here because it was published as fact.** A reviewer
+proposed a per-directory `ls` as the remedy for the first ACL. This log recorded that it "does not
+work either — under that ACL `ls` exits 0 with empty output". That was false, and measured in the
+wrong shell: `ls` here is an alias for `eza`, and `/bin/ls` — which is what a hook gets — exits 1.
+A second reviewer measured it four ways (`/bin/ls` rc=1, `ls -A` rc=1, `eza` rc=2, python
+`os.listdir` raising) and located the error exactly: on the ACL'd directory `ls` exits 1, and on
+its _parent_ it exits 0 **and prints the entry** — so "exits 0 with empty output" described no
+directory in the fixture at all. A later reviewer caught that this correction had itself carried
+forward the "empty output" half of the claim it was correcting. Two adjacent
+facts, conflated, and shipped into three files as a reason to reject a remedy that would in fact
+have worked for that ACL. The remedy is still not what shipped — it does not survive `deny
+readattr` either — but it was dismissed on a measurement that does not hold.
+
+Separately, `is_source` carried five of vite's nine CSS extensions and `WAIVER_NEVER` carried one:
+vite 8.1.5 matches `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and a scratch project using
+this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `outline: none` on
+`:focus-visible`, waived cleanly under `formatting-only`. Both lists now carry all nine, plus
+`.svg`, which was in `IS_SOURCE_EXT` only and so waivable outside `src/` despite carrying `role`
+and `aria-label`.
+
+**Two gaps this campaign found and did not close, recorded rather than implied.** A macOS ACL
+denying `read` on a FILE is invisible to every guard here: mode bits stay clean, `find` never opens
+files so every exit status is 0, and `cat`/`shasum` fail into `2>/dev/null` — so two different
+bodies of the same file hash identically with no refusal. Pre-existing, and the reason it is
+recorded rather than fixed is that closing it means reading every hidden file's bytes through a
+path that can fail, which is a different design from the one this campaign hardened. Separately,
+the file-read `-perm` arm is now the only mechanism-based permission test left in the file, and it
+is exactly the kind an ACL defeats — which is the argument that justified deleting its siblings,
+pointing back at it.
+
+**Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no _depth_ probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on. It does now have its own readability refusal; an earlier version of this sentence said otherwise and was measured false.
+
+**A methodology rule this cost three rounds to learn.** A suite number measured inside the shared session scratchpad is untrustworthy unless the runner hashes the hooks before and after the run. Reviewers work concurrently and pick colliding directory names; one caught a peer mid-run with `ps` and matched the file it was seeing to the artifact of its own mutation. A timed-out sweep in the main session also left a mutation in the real tree, caught only by a hash check afterwards. Every figure in the table above comes from a run whose start and end state were hash-verified.
+
+**A note on the board round itself.** One reviewer reported the suite as flaky on a shared machine — `118/3`, then `120/1` with a different probe red. Both numbers reproduce exactly as mutation signatures: the pre-fix revert, and the bare string-prefix mutation, each of which another reviewer reported running at the time. So they are mutation artifacts rather than fixture fragility, which two reviewers confirmed independently by reproducing them deterministically. The _attribution_ to a specific concurrent session is inference, not measurement — nothing in the tree records who ran what — and is stated that way here after a reviewer correctly objected that the earlier flat "not fixture fragility" claimed more than had been established.
 
 ## Board round 5: the first review of the parallel-authored batches, and one more upstream campaign
 
