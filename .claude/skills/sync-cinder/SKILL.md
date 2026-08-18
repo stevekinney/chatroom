@@ -25,9 +25,10 @@ What it does, in order:
 
 2. Runs chatroom's `lint`.
 3. Runs `check`.
-4. Runs `check:upstream`, which scans tracked AND untracked-but-not-ignored files for
-   `upstream: <owner>/<repo>#<issue>` workaround markers and fails if any referenced issue has
-   closed.
+4. Runs `check:upstream`, which scans tracked AND untracked-but-not-ignored files for GitHub
+   `upstream: <owner>/<repo>#<issue>` and Linear `upstream: <linear-issue-key>` workaround
+   markers. It checks GitHub through `gh` and Linear through `LINEAR_API_KEY`, failing if any
+   referenced issue has closed.
 5. Runs `check:peers`. Its `CHECKS` array currently holds a single entry — `conversationalist`
    against `@lostgradient/chat` — verifying chatroom's re-declared range still matches the range
    its owning package declares, so both resolve one instance. A release that moves chat's floor

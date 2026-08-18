@@ -14,6 +14,7 @@
 		"format": "prettier --write .",
 		"test:e2e": "playwright install && playwright test",
 		"test": "bun run test:e2e",
+		"test:unit": "bun test ./scripts/check-upstream-issues.test.ts",
 		"sync:cinder": "bun scripts/sync-cinder.ts",
 		"check:upstream": "bun scripts/check-upstream-issues.ts",
 		"check:peers": "bun scripts/check-peer-alignment.ts"
