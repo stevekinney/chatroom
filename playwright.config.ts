@@ -52,6 +52,11 @@ const CROSS_ENGINE = [
 ];
 
 export default defineConfig({
+	// The complete suite starts three application processes and runs Chromium,
+	// WebKit, and Firefox. Concurrent browser workers intermittently starve those
+	// shared processes on this machine; one keeps the interaction suite deterministic
+	// contention. This is capacity control, not a timeout or retry workaround.
+	workers: 1,
 	// With a SINGLE webServer Playwright infers `baseURL` from its port; with an
 	// array it does not, and every relative `page.goto('/…')` in the suite would
 	// fail. Set it explicitly to the production preview, which is what all but
@@ -121,7 +126,12 @@ export default defineConfig({
 			// Same port as the fixture entry above. `streaming-fixture.ts` exports
 			// `FIXTURE_PORT` so the number has one home, but a `webServer` command is
 			// a string — this is the one place it has to be spelled again.
-			env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:4599' }
+			env: {
+				// The SDK requires a non-empty key before it will send the request to
+				// the local fixture; this value is never sent to Anthropic.
+				ANTHROPIC_API_KEY: 'test-key',
+				ANTHROPIC_BASE_URL: 'http://127.0.0.1:4599'
+			}
 		},
 		// A dev server alongside the production preview, purely so hydration
 		// mismatches are observable: Svelte strips `hydration_mismatch` from

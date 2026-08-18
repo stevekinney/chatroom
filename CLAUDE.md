@@ -295,10 +295,11 @@ it: correct the issue, close it, and revert anything shipped on its account.
 
 **Every local workaround carries an `upstream:` marker.** When a workaround genuinely can't be
 avoided while waiting on a fix, tag it where it lives with a code comment of the form
-`upstream: <owner>/<repo>#<issue>`. That marker is what `bun run check:upstream` scans for — an
-untagged workaround is invisible to the cleanup loop and will outlive its fix. (Don't write a
-concrete `upstream: owner/repo#N` reference in prose or docs unless it marks a real, live
-workaround — the scanner treats every match as one.)
+`upstream: <owner>/<repo>#<issue>` for GitHub-tracked work or `upstream: <linear-issue-key>` for
+Linear-tracked work. That marker is what `bun run check:upstream` scans for — an untagged
+workaround is invisible to the cleanup loop and will outlive its fix. Linear checks use
+`LINEAR_API_KEY`; GitHub checks continue to use `gh`. (Don't write a concrete marker reference in
+prose or docs unless it marks a real, live workaround — the scanner treats every match as one.)
 
 **Verify state after filing or commenting — don't assume a comment means "tracked."** A GitHub
 issue can be closed by something else (a bulk sweep tied to an unrelated release, another

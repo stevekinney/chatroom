@@ -25,9 +25,10 @@ What it does, in order:
 
 2. Runs chatroom's `lint`.
 3. Runs `check`.
-4. Runs `check:upstream`, which scans tracked AND untracked-but-not-ignored files for
-   `upstream: <owner>/<repo>#<issue>` workaround markers and fails if any referenced issue has
-   closed.
+4. Runs `check:upstream`, which scans tracked AND untracked-but-not-ignored files for GitHub
+   `upstream: <owner>/<repo>#<issue>` and Linear `upstream: <linear-issue-key>` workaround
+   markers. It checks GitHub through `gh` and Linear through `LINEAR_API_KEY`, failing if any
+   referenced issue has closed.
 5. Runs `check:peers`. Its `CHECKS` array currently holds a single entry — `conversationalist`
    against `@lostgradient/chat` — verifying chatroom's re-declared range still matches the range
    its owning package declares, so both resolve one instance. A release that moves chat's floor
@@ -51,14 +52,16 @@ flagged marker, in the same session:
 2. If it shipped: remove the workaround (the marker comment and whatever it guarded — extra
    import, cast, event-mirroring, DOM reach-in), re-run `lint` + `check`, and commit the
    cleanup.
-3. If the problem still reproduces despite the closed issue: reopen it
-   (`gh issue reopen <n> --repo <owner/repo> --comment '...'`), verify the state with
-   `gh issue view <n> --json state`, and leave the marker in place.
+3. If the problem still reproduces despite the closed issue: reopen the GitHub issue
+   (`gh issue reopen <n> --repo <owner/repo> --comment '...'`) or move the Linear issue back to
+   `In Progress` with a checkpoint explaining the reproduced behavior, then read its state back.
+   Leave the marker in place.
 
 ## When this fits in the larger loop
 
-The full arc for an upstream cinder issue is: file it with `gh issue create` against
-`stevekinney/cinder` (see CLAUDE.md's "Filing and resolving upstream issues") → drive it to a
-merged PR (the `ralph-pipeline` skill, run from inside `../cinder`) → **publish to npm** (a
+The full arc for an upstream Cinder issue is: file it in Linear team `CIN`, with a native
+`blocked by` relation to the affected chatroom work (fall back to `gh issue create` against
+`stevekinney/cinder` only if the repository has no owning Linear team) → drive it to a merged PR
+(the `ralph-pipeline` skill, run from inside `../cinder`) → **publish to npm** (a
 merged-but-unpublished fix never reaches chatroom) → run this skill from `chatroom` to pull it
 in, confirm nothing broke, and clean up any workarounds the release just made obsolete.
