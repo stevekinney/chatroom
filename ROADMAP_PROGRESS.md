@@ -441,44 +441,45 @@ Held open through the sections above, and fixed on 2026-08-17 as its own scoped 
 - Criterion 1 asked for the prefix test "after `ignored_matching_paths` returns", which read literally means at the three call sites — but criterion 3 asked those call sites to stay unmodified, and both cannot hold at once. The filter went _inside_ the function, which satisfies the intent and criterion 3 literally, gets it right once instead of three times, and cannot be missed by a fourth call site later. The deny set is derived from the `:(exclude)` pathspecs actually passed rather than a second copy of `WORK_DENY`, so it cannot drift; the two `-C` call sites pass no excludes and are unaffected by construction.
 - Criterion 2 asked that a source-extension file written into `.claude/.review-board-state/` leave the hash **unchanged**. That is precisely the fail-open above, so it is not implemented. Bookkeeping written there leaves the hash unchanged — the criterion's actual purpose — and a _source_ file refuses by name. The issue's stated premise, that this defect "fails closed" so the only risk is livelock, is true of the defect and **not** of the fix it prescribes.
 
-**Forty-six new assertions, and the mutations that redden them.** Units first, because this
+**Fifty-four new assertions, and the mutations that redden them.** Units first, because this
 paragraph shipped a wrong count in four consecutive rounds: the suite prints one line per
 assertion, and a parameterized loop prints one per iteration, so a `for` over nine artifact names
 is one `ok` call site and nine assertions. Counted by running the suite at `0261ac8` and at `HEAD`
-and diffing the rosters — **117 → 163** — rather than by grepping call sites, which is what
-produced two of the four wrong figures. Every row below is pasted output from one sweep, run in an
-isolated copy of the hooks rather than the working tree, after a background sweep writing
-`work-hash.sh` concurrently with a foreground edit destroyed one.
+and diffing the rosters — **117 → 171** — never by grepping call sites, which produced two of the
+four wrong figures. Every row is pasted output from one sweep in an isolated copy of the hooks,
+after a background sweep writing `work-hash.sh` concurrently with a foreground edit destroyed one.
 
-| mutation                                                         | result   |
-| ---------------------------------------------------------------- | -------- |
-| clean                                                            | 163 / 0  |
-| pre-fix at `0261ac8`                                             | 124 / 39 |
-| the first `walk_hidden_dir`-based guard (`c7ac225`)              | 131 / 32 |
-| the access(2)-based guard (`aeddf2f`)                            | 159 / 4  |
-| state-dir guard neutered at both entry points                    | 136 / 27 |
-| guard file walk bounded to `-maxdepth 1`                         | 151 / 12 |
-| containment arm deleted                                          | 162 / 1  |
-| containment reversed                                             | 161 / 2  |
-| `${#__deny[@]}` empty-array guard removed                        | 162 / 1  |
-| `walk_hidden_dir` stops asking `find` whether it finished        | 162 / 1  |
-| `state_dir_hides_source` stops asking `find` whether it finished | 160 / 3  |
-| root-stat arm reverted to a bare `[ -d ]`                        | 162 / 1  |
-| root-stat arm always refuses (over-refusal)                      | 87 / 76  |
-| vite CSS set removed from `IS_SOURCE_EXT`                        | 159 / 4  |
-| vite CSS set and `.svg` removed from `WAIVER_NEVER`              | 154 / 9  |
-| `state_dir_refusal` newline arm deleted                          | 162 / 1  |
-| formatter fallback echoes its argument                           | 162 / 1  |
-| pre-fix plus `.signoff` in `IS_SOURCE_EXT`                       | 123 / 40 |
+| mutation                                            | result   |
+| --------------------------------------------------- | -------- |
+| clean                                               | 171 / 0  |
+| pre-fix at `0261ac8`                                | 128 / 43 |
+| first `walk_hidden_dir`-based guard (`c7ac225`)     | 134 / 37 |
+| access(2)-based guard (`aeddf2f`)                   | 163 / 8  |
+| bare exit-status guard (`e2dfbe1`)                  | 164 / 7  |
+| state-dir guard neutered at both entry points       | 143 / 28 |
+| guard file walk bounded to `-maxdepth 1`            | 161 / 10 |
+| containment arm deleted                             | 170 / 1  |
+| containment reversed                                | 169 / 2  |
+| `${#__deny[@]}` empty-array guard removed           | 170 / 1  |
+| state-dir boundary check disabled                   | 170 / 1  |
+| tree-wide boundary check deleted                    | 170 / 1  |
+| one sentinel consumer reverted to a substring test  | 169 / 2  |
+| churn retry probe removed                           | 170 / 1  |
+| `is_source` stops lowercasing                       | 170 / 1  |
+| vite CSS set removed from `IS_SOURCE_EXT`           | 167 / 4  |
+| vite CSS set and `.svg` removed from `WAIVER_NEVER` | 162 / 9  |
+| `state_dir_refusal` newline arm deleted             | 170 / 1  |
+| root-stat arm always refuses (over-refusal)         | 90 / 81  |
+| pre-fix plus `.signoff` in `IS_SOURCE_EXT`          | 127 / 44 |
 
-**All 46 are reddened by at least one of those**, computed rather than asserted: the union of every
+**All 54 are reddened by at least one of those**, computed rather than asserted: the union of every
 mutation's failing-assertion names, normalised for the per-run `mktemp` paths two pre-existing
-probes embed in their own names, contains all 46. Earlier versions of this sentence claimed
-coverage a reviewer then disproved, twice, which is why it is now the output of a set operation.
-Two rows exist only to falsify a probe redundancy would otherwise hold green — the `.signoff` row
-for the bookkeeping probe, and the over-refusal row for "a genuinely absent state dir does not
-provoke a refusal", which no other mutation reaches because every other mutation makes the guard
-refuse _less_.
+probes embed in their own names, contains all 54. Earlier versions of this sentence claimed
+coverage a reviewer then disproved, twice. Three rows exist only because redundancy would otherwise
+hold a probe green — the `.signoff` row for the bookkeeping probe, the over-refusal row for "a
+genuinely absent state dir does not provoke a refusal" (no other mutation reaches it, since every
+other one makes the guard refuse _less_), and the four commit-checkout rows, which measure what
+each successive design actually missed rather than what its author believed it caught.
 
 **Four claims this record made confidently and wrongly**, each caught by a reviewer, kept because the pattern is the lesson:
 
