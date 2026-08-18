@@ -294,9 +294,18 @@ is_hashable() {
 # So an ancestor of a denied path is deliberately KEPT and left to be walked.
 #
 # Trailing slashes are stripped from both sides because `git status
-# --ignored=matching` reports a collapsed directory as `foo/` while the
-# pathspec that named it has no slash; without that, the two never compare
-# equal and the filter is inert in exactly the case it exists for.
+# --ignored=matching` reports a collapsed directory as `foo/` while the pathspec
+# that named it has no slash. This is DEFENSIVE, not load-bearing, and an
+# earlier version of this comment claimed otherwise -- that without the strip
+# "the filter is inert in exactly the case it exists for", which is false and
+# was caught by building the strip-less variant: the suite stays 121/0 and
+# `path_is_denied '.claude/.review-board-state/' '.claude/.review-board-state'`
+# still answers denied, because the `"$__d"/*` arm below matches `foo/` against
+# `foo/*` with `*` binding the empty string. What the strip actually buys is a
+# pathspec spelled WITH a trailing slash matching a path below it (`foo/bar.ts`
+# against a deny of `foo/`), which no call site uses today. Kept because it is
+# free; described honestly because a false claim about what a line is holding up
+# is how the next reader deletes the wrong one.
 #
 # Patterns are QUOTED inside `case` so a denied path containing a glob
 # character matches literally rather than as a pattern -- the same reason the
@@ -311,6 +320,47 @@ path_is_denied() {
     case "$__p" in "$__d"/*) return 0 ;; esac
   done
   return 1
+}
+
+# Prints the first source file hiding inside the state directory, or nothing.
+#
+# `path_is_denied` making WORK_DENY real on the ignored-content walk closed a
+# livelock and, on its own, opened the one hole this file already learned not to
+# leave: `.claude/.review-board-state` is the ONLY directory in WORK_DENY, and a
+# denied directory the bundler can resolve an import into is verbatim the `docs/`
+# mistake WORK_DENY's own comment records. Demonstrated, not theorised -- an
+# `Evil.svelte` written here stopped moving the hash AND dropped out of
+# WAIVER_FORBIDDEN, so one board round on a tracked `import` line bought
+# unlimited unreviewed edits to a component vite still bundles, SSRs and
+# hydrates, and `--grounds formatting-only` would be recorded over it.
+#
+# Refusing is both the fail-closed answer and the ACTIONABLE one, which is the
+# whole point: the pre-fix behaviour hashed such a file, so the gate drifted with
+# no explanation and every retry made it worse. That is the livelock CHR-19 set
+# out to kill. Naming the file kills it without trading it for a silent allow --
+# the same shape as the external-ignore guard, which also refuses by name rather
+# than hiding what it cannot review.
+#
+# NOT conditional on the directory being ignored. Unignored, it is excluded from
+# the diff by the pathspec instead (which git honours for `git add`), so a source
+# file here is invisible in that configuration too -- pre-fix included. This
+# closes both.
+#
+# Silent in normal operation: nothing the sign-off flow writes here has a source
+# extension. Either walk sentinel counts as a hit, since a directory this cannot
+# finish reading is exactly the state rule one says to block on.
+state_dir_hides_source() {
+  [ -d "$STATE_DIR" ] || return 0
+  walk_hidden_dir "$STATE_DIR" | while IFS= read -r __sp; do
+    [ -z "$__sp" ] && continue
+    case "$__sp" in
+      "$NEWLINE_IN_PATH_SENTINEL"|"$WALK_TRUNCATED_SENTINEL")
+        printf '%s
+' "$__sp"; break ;;
+    esac
+    if is_source "$__sp"; then printf '%s
+' "$__sp"; break; fi
+  done
 }
 
 # Prints "!! "-prefixed paths from `git status --porcelain --ignored=matching`
@@ -336,7 +386,7 @@ path_is_denied() {
 # the full NUL-safe rewrite of every downstream consumer that a complete fix
 # would need -- confirmed real and demonstrated as a live silent ALLOW by
 # three independent review rounds before this refusal was added.
-
+#
 # Optional leading `-C <dir>` runs against that repo instead of the current
 # one (an embedded gitlink or a linked worktree), matching git's own flag.
 #
@@ -632,6 +682,14 @@ compute_work_hash() {
       WORK_ERROR="${STATE_DIR} is hidden by an ignore source outside the work tree, which would make every sign-off invalidate itself. Move that rule into .gitignore, or stop ignoring the state directory."
       return 1
     fi
+  fi
+
+  # ...and must not become a hiding place either. See state_dir_hides_source.
+  local __state_src
+  __state_src=$(state_dir_hides_source)
+  if [ -n "$__state_src" ]; then
+    WORK_ERROR="${STATE_DIR} holds source this gate would otherwise stop measuring: ${__state_src}. Nothing that renders, or that decides what renders, may live in the board's own state directory. Move it into the tree, where it is reviewable."
+    return 1
   fi
 
   # Two more places work hides that this cannot enumerate, so it refuses rather
@@ -1188,6 +1246,20 @@ waiver_forbidden_paths() {
   # Not $(work_baseline): its WORK_ERROR assignment must survive.
   work_baseline || return 1
   baseline="$WORK_BASELINE"
+
+  # Same refusal compute_work_hash makes, repeated here rather than inherited.
+  # It IS reached anyway today -- review-board-signoff.sh runs compute_work_hash
+  # after this clears -- but that is a property of the CALLER's ordering, and the
+  # waiver half is the live half: WAIVER_FORBIDDEN going empty is what lets
+  # `--grounds formatting-only` be recorded over a component. Depending on a
+  # neighbouring script's call order for a fail-closed guarantee is exactly the
+  # coincidence this file's own comments refuse elsewhere.
+  local __state_src
+  __state_src=$(state_dir_hides_source)
+  if [ -n "$__state_src" ]; then
+    WORK_ERROR="${STATE_DIR} holds source a waiver cannot cover: ${__state_src}. Nothing that renders, or that decides what renders, may live in the board's own state directory. Move it into the tree, where it is reviewable."
+    return 1
+  fi
 
   # A stash can carry a whole component and this cannot cheaply enumerate one,
   # so it refuses rather than waives what it cannot see.

@@ -749,12 +749,9 @@ rm -rf "$d"
 # its call sites and, until `path_is_denied` existed, did nothing whatsoever for
 # the state DIRECTORY: git honors `:(exclude)` for an individually-named file
 # and reports a collapsed ignored directory whole regardless of the pathspec
-# (all three spellings -- bare, trailing slash, `/**`). The directory stayed out
-# of the hash only because `is_source` happens to reject `.signoff` and the
-# extensionless `last-cleared`, so a source-extension file landing there hashed,
-# and every sign-off written afterwards moved the hash again -- the livelock the
-# probe above diagnoses for an EXTERNAL rule, reached instead through an
-# ordinary in-tree `.gitignore` rule, where that diagnostic is silent by design.
+# (all three spellings -- bare, trailing slash, `/**`). The bookkeeping the
+# sign-off flow actually writes there must never move the hash, or recording a
+# sign-off invalidates the sign-off just recorded.
 #
 # Asserts the RELATION, not a digest: hash values are tree-specific and no
 # literal would reproduce anywhere else. `h1` is nonempty because the
@@ -764,41 +761,107 @@ rm -rf "$d"
 d=$(new_repo) || exit 1
 (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
 wh() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"'); }
+we() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"'); }
+wf() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; waiver_forbidden_paths; echo "$WORK_ERROR"'); }
 h1=$(wh "$d")
-printf 'export const sneak = 1\n' > "$d/.claude/.review-board-state/sneak.ts"
+printf 'x\n' > "$d/.claude/.review-board-state/round.signoff"
 h2=$(wh "$d")
 # A REWRITE too, not just the create: the original finding moved the hash on
 # both, and a filter that only skipped new paths would pass the create alone.
-printf 'export const sneak = 2\n' > "$d/.claude/.review-board-state/sneak.ts"
+printf 'y\n' > "$d/.claude/.review-board-state/round.signoff"
 h3=$(wh "$d")
 # One level down, in the directory the sign-offs themselves live in -- the walk
 # enumerates recursively, so a filter applied to the collapsed top-level entry
 # only would still let this through.
 mkdir -p "$d/.claude/.review-board-state/signoffs"
-printf 'export const deep = 3\n' > "$d/.claude/.review-board-state/signoffs/deep.ts"
+printf 'z\n' > "$d/.claude/.review-board-state/signoffs/deep.signoff"
 h4=$(wh "$d")
 if [ -z "$h1" ]; then
-  no "a source-extension file in the state dir does not move the hash" "h1 was empty; the fixture proves nothing"
+  no "the board's own bookkeeping does not move the hash" "h1 was empty; the fixture proves nothing"
 elif [ "$h1" = "$h2" ] && [ "$h1" = "$h3" ] && [ "$h1" = "$h4" ]; then
-  ok "a source-extension file in the state dir does not move the hash"
+  ok "the board's own bookkeeping does not move the hash"
 else
-  no "a source-extension file in the state dir does not move the hash" "h1=[$h1] h2=[$h2] h3=[$h3] h4=[$h4]"
+  no "the board's own bookkeeping does not move the hash" "h1=[$h1] h2=[$h2] h3=[$h3] h4=[$h4]"
 fi
 rm -rf "$d"
 
-# DIRECTION is the fail-OPEN risk in that filter, and it is invisible from the
-# probe above because the state dir has no ignored ancestor. A denied path
-# sitting UNDER an ignored directory must NOT suppress that directory: were the
-# test written the other way round, an ignored `.claude/` would drop on account
-# of `.claude/.review-board-state` and take `.claude/hooks` -- this gate's own
-# definition -- out of the hash with it. Driven against `ignored_matching_paths`
-# directly rather than through compute_work_hash, whose STATE_DIR guard and
-# artifact rules would otherwise decide the outcome and hide which arm answered.
+# Making WORK_DENY real on the walk closed a livelock and, on its own, opened
+# the `docs/` hole in the one DIRECTORY WORK_DENY names: a `.svelte` written
+# into the state dir stopped moving the hash and dropped out of
+# WAIVER_FORBIDDEN, so `--grounds formatting-only` would be recorded over a
+# component vite still bundles and SSRs. Measured, both halves: pre-fix the hash
+# MOVED and WAIVER_FORBIDDEN listed the file; with the filter and no guard the
+# hash was UNCHANGED and WAIVER_FORBIDDEN was empty. The gate's first design
+# rule is fail closed, so this refuses BY NAME rather than either hiding it (a
+# silent allow) or hashing it (drift with no explanation, which is the livelock
+# CHR-19 killed). Both entry points, because the waiver half is the live half.
+for entry in hash waiver; do
+  d=$(new_repo) || break
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  printf '<div role="dialog" aria-modal="true"><button>no trap</button></div>\n' \
+    > "$d/.claude/.review-board-state/Evil.svelte"
+  if [ "$entry" = hash ]; then err=$(we "$d"); else err=$(wf "$d"); fi
+  # Names the offending FILE, not just the directory: "something in there" is
+  # not actionable, and the message is the entire remedy for a livelock.
+  if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+    ok "a rendered file in the state dir refuses by name ($entry)"
+  else
+    no "a rendered file in the state dir refuses by name ($entry)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# The same refusal one level BELOW the denied path, reached the only way that
+# reaches it: a NESTED `.gitignore` inside the state dir. A top-level rule
+# naming `.claude/.review-board-state/signoffs/` does NOT get here -- git
+# suppresses a collapsed entry strictly below an `:(exclude)` path perfectly
+# well and only fails on the entry that IS the excluded path. Verified by
+# sweeping six ignore-rule shapes; this is the one that survives the exclude.
 d=$(new_repo) || exit 1
+mkdir -p "$d/.claude/.review-board-state/signoffs"
+printf 'signoffs/\n' > "$d/.claude/.review-board-state/.gitignore"
+printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
+err=$(we "$d")
+if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+  ok "a rendered file below the denied path refuses by name"
+else
+  no "a rendered file below the denied path refuses by name" "got [$err]"
+fi
+rm -rf "$d"
+
+# The "or sits UNDER one" arm of path_is_denied is a SEPARATE arm from the
+# exact-match one and the probes above cannot see it -- the state-dir guard
+# refuses before the filter matters, and bookkeeping below the denied path
+# would not move the hash even unfiltered (is_source rejects it). Deleting that
+# one line left the whole suite green. Pinned at the unit level instead, on the
+# same nested-`.gitignore` shape, where the arm is the only thing suppressing
+# the entry.
+d=$(new_repo) || exit 1
+mkdir -p "$d/deny/sub" "$d/foo/bar"
+# The nested .gitignore must be TRACKED, and this is the whole fixture. Left
+# untracked, git prunes `deny` wholesale during traversal -- nothing in it
+# matches the pathspec -- the collapsed entry never appears at all, and the arm
+# this probe exists for is never reached, so the probe passes for the wrong
+# reason. Measured both ways before it was written this way round.
+printf 'sub/\n' > "$d/deny/.gitignore"
 (cd "$d" && printf 'foo/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
-mkdir -p "$d/foo/bar"
-printf 'export const x = 1\n' > "$d/foo/bar/x.ts"
+printf 'x\n' > "$d/foo/bar/x.ts"
+printf 'x\n' > "$d/deny/sub/x.ts"
 imp() { (cd "$1" && shift && bash -c '. .claude/hooks/work-hash.sh; ignored_matching_paths "$@"' _ "$@"); }
+out=$(imp "$d" . ':(exclude)deny')
+# `foo/` is a POSITIVE CONTROL, not incidental: it is ignored and not excluded
+# here, so it must come back. Without it a broken-and-empty enumeration would
+# satisfy "deny/sub/ is absent" vacuously -- the shape this suite already
+# documents as the way an absence check stops discriminating.
+if printf '%s' "$out" | grep -qxF 'foo/' && ! printf '%s' "$out" | grep -q 'deny'; then
+  ok "an entry below an excluded path is suppressed"
+else
+  no "an entry below an excluded path is suppressed" "got [$out]"
+fi
+# Torn down before the probes below reuse this fixture: `deny/sub/` stays
+# ignored via its nested .gitignore and would otherwise appear in their output
+# and fail them for a reason that has nothing to do with what they assert.
+rm -rf "$d/deny"
 if [ "$(imp "$d" . ':(exclude)foo')" = "" ]; then
   ok "an excluded ignored directory is suppressed"
 else
@@ -818,6 +881,31 @@ if [ "$(imp "$d" . ':(exclude)foo')" = "foobar/" ]; then
   ok "a string-prefix match that is not a path prefix is not suppressed"
 else
   no "a string-prefix match that is not a path prefix is not suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
+fi
+rm -rf "$d"
+
+# The `${#__deny[@]}` guard in `ignored_matching_paths`. Stock macOS /bin/bash
+# (3.2) treats expanding an EMPTY array under `set -u` as an unbound variable
+# and dies -- which at the two `-C` call sites, the ones that pass no excludes,
+# silently takes out the gitlink and worktree checks: a fail-OPEN, and the
+# reason the guard is written as a count test rather than a bare expansion.
+#
+# Drives /bin/bash EXPLICITLY, because the suite itself runs under whatever
+# `bash` is on PATH and that is 5.x on this machine, where the same code is
+# fine. Its discrimination is therefore version-dependent BY NATURE: it reddens
+# where /bin/bash is 3.2 and is a weaker (still true) assertion elsewhere. Said
+# plainly rather than dressed up as portable coverage -- the version it actually
+# ran against is printed, so a green line cannot be mistaken for a proof it did
+# not do.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp" && printf 'x\n' > "$d/tmp/x.md"
+bv=$(/bin/bash --version 2>/dev/null | head -1 | sed -n 's/.*version \([0-9.]*\).*/\1/p')
+out=$(cd "$d" && /bin/bash -c 'set -u; . .claude/hooks/work-hash.sh; ignored_matching_paths -C . .' 2>&1)
+if printf '%s' "$out" | grep -qxF 'tmp/'; then
+  ok "the empty-deny guard survives set -u at the -C call sites (/bin/bash $bv)"
+else
+  no "the empty-deny guard survives set -u at the -C call sites (/bin/bash $bv)" "got [$out]"
 fi
 rm -rf "$d"
 
