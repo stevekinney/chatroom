@@ -441,20 +441,37 @@ Held open through the sections above, and fixed on 2026-08-17 as its own scoped 
 - Criterion 1 asked for the prefix test "after `ignored_matching_paths` returns", which read literally means at the three call sites — but criterion 3 asked those call sites to stay unmodified, and both cannot hold at once. The filter went _inside_ the function, which satisfies the intent and criterion 3 literally, gets it right once instead of three times, and cannot be missed by a fourth call site later. The deny set is derived from the `:(exclude)` pathspecs actually passed rather than a second copy of `WORK_DENY`, so it cannot drift; the two `-C` call sites pass no excludes and are unaffected by construction.
 - Criterion 2 asked that a source-extension file written into `.claude/.review-board-state/` leave the hash **unchanged**. That is precisely the fail-open above, so it is not implemented. Bookkeeping written there leaves the hash unchanged — the criterion's actual purpose — and a _source_ file refuses by name. The issue's stated premise, that this defect "fails closed" so the only risk is livelock, is true of the defect and **not** of the fix it prescribes.
 
-**Fifteen probes, and the mutations that redden them**, all measured against the shipped tree rather than reasoned about, since every earlier version of this paragraph got a number wrong:
+**Thirty-five new assertions, and the mutations that redden them.** Units first, because this
+paragraph has now shipped a wrong count three times: the suite prints one line per assertion, and
+a parameterized loop prints one per iteration, so a `for` over nine artifact names is one `ok`
+call site and nine assertions. Measured by running the suite at `0261ac8` and at `HEAD` and
+diffing the rosters: **117 → 152**, so 35 new assertions from 12 `ok` call sites. Every figure
+below is pasted output, not a count carried in prose.
 
-| mutation                                            | result               | reddens |
-| --------------------------------------------------- | -------------------- | ------- |
-| clean                                               | 139 passed, 0 failed | —       |
-| pre-fix `work-hash.sh` at `0261ac8`                 | 122 / 17             | 17      |
-| the first `walk_hidden_dir`-based guard (`c7ac225`) | 126 / 13             | 13      |
-| state-dir guard neutered at both entry points       | 124 / 15             | 15      |
-| guard's file walk bounded to `-maxdepth 1`          | 129 / 10             | 10      |
-| `"$__d"/*` containment arm deleted                  | 138 / 1              | 1       |
-| containment reversed                                | 137 / 2              | 2       |
-| `${#__deny[@]}` empty-array guard removed           | 138 / 1              | 1       |
+| mutation                                            | result               |
+| --------------------------------------------------- | -------------------- |
+| clean                                               | 152 passed, 0 failed |
+| pre-fix `work-hash.sh` at `0261ac8`                 | 122 / 30             |
+| the first `walk_hidden_dir`-based guard (`c7ac225`) | 128 / 24             |
+| state-dir guard neutered at both entry points       | 130 / 22             |
+| guard's file walk bounded to `-maxdepth 1`          | 142 / 10             |
+| `"$__d"/*` containment arm deleted                  | 151 / 1              |
+| containment reversed                                | 150 / 2              |
+| `${#__deny[@]}` empty-array guard removed           | 151 / 1              |
+| access(2) directory loop deleted                    | 151 / 1              |
+| vite CSS set removed from `IS_SOURCE_EXT`           | 148 / 4              |
+| vite CSS set removed from `WAIVER_NEVER`            | 146 / 6              |
+| formatter fallback echoes its argument              | 151 / 1              |
+| pre-fix plus `.signoff` in `IS_SOURCE_EXT`          | 121 / 18             |
 
-Fourteen of the fifteen are reddened by one of those. The fifteenth, "the board's own bookkeeping does not move the hash", is **redundantly guarded** and is now labelled as such in the file rather than counted as mutation-proven: `path_is_denied` drops the path and `is_source` rejects `.signoff`, so either alone holds it green. It is falsifiable — pre-fix `work-hash.sh` with `.signoff` added to `IS_SOURCE_EXT` reddens it, at 121/18 — so it is a real property pin for the historical self-invalidating sign-off, not an assertion that cannot fail.
+**All 35 are reddened by at least one of those**, and that is computed rather than asserted: the
+union of every mutation's failing-assertion names, normalised for the per-run `mktemp` paths two
+pre-existing probes embed in their own names, contains all 35. The previous two versions of this
+sentence claimed coverage that a reviewer then disproved, which is why it is now the output of a
+set operation. The last of the mutations exists solely to falsify the bookkeeping probe, which is
+redundantly guarded — `path_is_denied` drops the path and `is_source` rejects `.signoff`, so
+either alone holds it green — and that is labelled in the file rather than left to look like a
+single-mutation pin.
 
 **Four claims this record made confidently and wrongly**, each caught by a reviewer, kept because the pattern is the lesson:
 
@@ -465,7 +482,11 @@ Fourteen of the fifteen are reddened by one of those. The fifteenth, "the board'
 
 One figure correction, attributed properly: the **CHR-19 issue** (not this note, which quoted no figure) said `grep -n WORK_DENY` returns 12. It returned 21 at `0261ac8` and 28 now.
 
-**Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. Fixing that means changing how `is_artifact` bounds every walk in the file, which is the change that once hashed 3000 Istanbul files at 7s, so it is a separate task rather than a rider on this one. The waiver path also still has no depth or readability probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on.
+**Two more fail-opens the third round found, both closed, both build-proven rather than argued.** The readability probes asked `-perm`, which is a question about the MODE — and on macOS an ACL (`chmod +a "<user> deny list" <dir>`, no root) denies readdir while the mode still reads `drwxr-xr-x`. Measured: every `-perm` arm clean, `ls` on the state-dir root succeeding because the ACL sits on a child, `find` enumerating nothing, and a `role="dialog"` with no focus trap surviving four `--pass` sign-offs while staying readable by exact path. The reviewer's suggested remedy — a per-directory `ls` — does not work either, which is worth recording because it would have shipped unverified: under that ACL `ls` exits 0 with empty output. `[ -r ]` and `[ -x ]` are access(2), which honours ACLs, and that is what the guard asks now. Separately, `is_source` carried five of vite's nine CSS extensions and `WAIVER_NEVER` carried one: vite 8.1.5 matches `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and a scratch project using this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `outline: none` on `:focus-visible`, waived cleanly under `formatting-only`. Both lists now carry all nine.
+
+**Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no depth or readability probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on.
+
+**A methodology rule this cost three rounds to learn.** A suite number measured inside the shared session scratchpad is untrustworthy unless the runner hashes the hooks before and after the run. Reviewers work concurrently and pick colliding directory names; one caught a peer mid-run with `ps` and matched the file it was seeing to the artifact of its own mutation. A timed-out sweep in the main session also left a mutation in the real tree, caught only by a hash check afterwards. Every figure in the table above comes from a run whose start and end state were hash-verified.
 
 **A note on the board round itself.** One reviewer reported the suite as flaky on a shared machine — `118/3`, then `120/1` with a different probe red. Both numbers reproduce exactly as mutation signatures: the pre-fix revert, and the bare string-prefix mutation, each of which another reviewer reported running at the time. So they are mutation artifacts rather than fixture fragility, which two reviewers confirmed independently by reproducing them deterministically. The _attribution_ to a specific concurrent session is inference, not measurement — nothing in the tree records who ran what — and is stated that way here after a reviewer correctly objected that the earlier flat "not fixture fragility" claimed more than had been established.
 

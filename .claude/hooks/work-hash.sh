@@ -79,6 +79,21 @@ WAIVER_NEVER=(
   '.svelte'
   '.html'
   '.css'
+  # The rest of what vite 8.1.5 compiles as CSS: its own matcher is
+  # `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and this list carried
+  # only `.css`, so `assets/theme.pcss` was waivable anywhere outside `src/`.
+  # Build-proven rather than read off the regex: a scratch project using this
+  # repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying
+  # `outline: none` on `:focus-visible`, with `--grounds formatting-only`
+  # recorded cleanly over it.
+  '.scss'
+  '.sass'
+  '.less'
+  '.styl'
+  '.stylus'
+  '.pcss'
+  '.postcss'
+  '.sss'
   # Build config decides what SSRs and how it hydrates -- this repo has no
   # svelte.config.js, so vite.config.ts is where the sveltekit() plugin lives.
   # `--grounds formatting-only` cleared a rewrite setting `ssr.noExternal` and
@@ -250,7 +265,7 @@ is_artifact() {
 # .svelte/.html/.css, which left `.ts`/`.js`/`.json` inside a hidden directory
 # invisible -- confirmed shipped by a real vite build).
 IS_SOURCE_EXT=(
-  .svelte .html .css .scss .sass .less .styl .svx
+  .svelte .html .css .scss .sass .less .styl .svx .pcss .postcss .sss .stylus
   .ts .js .mjs .cjs .mts .cts .jsx .tsx .vue .json .svg
 )
 is_source() {
@@ -382,10 +397,37 @@ state_dir_hides_source() {
     printf 'unreadable:%s\n' "$STATE_DIR"
     return 0
   fi
-  # Two -maxdepth counts rather than -mindepth: this machine's BSD find silently
-  # drops -prune the moment -mindepth appears anywhere in the expression, and
-  # compute_work_hash's bounds loop already carries the scars. Equal counts mean
-  # nothing sits at the deeper level.
+  # ...and then ask ACCESS, not mode bits, per directory. The three probes above
+  # read `-perm`, which answers a question about the MODE -- and on macOS an ACL
+  # (`chmod +a "<user> deny list" <dir>`, no root required) denies readdir while
+  # the mode still reads `drwxr-xr-x`. Measured: both `-perm` arms empty, `ls` on
+  # the state-dir ROOT succeeds because the ACL is on a child, `find` enumerates
+  # nothing, and a `role="dialog"` with no focus trap sat there through four
+  # `--pass` sign-offs while staying readable by exact path, so a bundler
+  # resolving the import gets the component the gate cannot see.
+  #
+  # `[ -r ] && [ -x ]` is access(2), which honours ACLs. `ls` is NOT a
+  # substitute and was tried first: under that same ACL `ls -- <dir>` exits 0
+  # with empty output, which is the silent-empty failure this whole function
+  # exists to refuse. The ACL'd directory is still visible as an ENTRY in its
+  # parent, so `find` names it even though it cannot descend, which is what
+  # makes a per-directory test possible at all. Costs one test per directory,
+  # which is nothing: this walk has no cap because it reads no contents.
+  local __dir
+  while IFS= read -r -d '' __dir; do
+    if [ ! -r "$__dir" ] || [ ! -x "$__dir" ]; then
+      printf 'unreadable:%s\n' "$__dir"
+      return 0
+    fi
+  done < <(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type d -print0 2>/dev/null)
+  # Two -maxdepth counts rather than -mindepth. The hazard that forced this form
+  # on compute_work_hash's bounds loop -- BSD find silently dropping -prune the
+  # moment -mindepth appears anywhere in the expression -- cannot bite HERE,
+  # since this walk has no -prune at all; the two-count form is kept for
+  # consistency with that loop rather than out of necessity, and saying which is
+  # the point. Equal counts mean nothing sits at the deeper level; anything at
+  # depth+2 or below has an ancestor directory at depth+1, so the -type-less
+  # -print catches it without needing a -type filter.
   local __d_in __d_out
   __d_in=$(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -print 2>/dev/null | wc -l)
   __d_out=$(find -L "$STATE_DIR" -maxdepth $((STATE_DIR_MAX_DEPTH + 1)) -print 2>/dev/null | wc -l)
@@ -430,8 +472,16 @@ state_dir_refusal() {
         "$__path" "$STATE_DIR_MAX_DEPTH" ;;
     newline)
       printf '%s contains a file whose name has a literal newline byte, which this gate cannot safely name. Rename it, or move that content out of the state directory.' "$__path" ;;
+    # Deliberately does NOT interpolate "$1". This arm is unreachable from any
+    # reason the detector emits, so it exists for a reason added later -- and
+    # echoing an unrecognised token verbatim is exactly how `__WALK_TRUNCATED__`
+    # once reached a person where a filename belongs. A reviewer proved that
+    # live by making the detector emit a sentinel as its reason and watching it
+    # surface in the sentence while the probe named for that property stayed
+    # green. Unrecognised means the gate is broken, and saying so is the whole
+    # of what a reader can act on.
     *)
-      printf '%s could not be evaluated (%s), so this gate refuses rather than measuring less than it claims.' "$STATE_DIR" "$1" ;;
+      printf '%s could not be evaluated: this gate emitted a refusal reason it does not recognise, which is a defect in the gate itself rather than in the tree. Report it.' "$STATE_DIR" ;;
   esac
 }
 

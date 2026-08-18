@@ -830,7 +830,10 @@ done
 # the refusal, which a review round measured as decorative -- the guard fires
 # identically with and without it. That rationale is real, but it belongs to the
 # `:(exclude)` probe further down, where it IS load-bearing. Bounding the walk
-# to `-maxdepth 1` reddens this probe alone.
+# to `-maxdepth 1` reddens this probe and the nine artifact shapes below it --
+# ten in all, which is what ROADMAP_PROGRESS.md's table says. An earlier version
+# of this comment claimed "this probe alone", false about exactly the thing this
+# suite's discipline rests on: attributing a mutation to the set it reddens.
 d=$(new_repo) || exit 1
 mkdir -p "$d/.claude/.review-board-state/signoffs"
 printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
@@ -970,6 +973,71 @@ else
 fi
 rm -rf "$d"
 
+# ACL, not mode bits. On macOS `chmod +a "<user> deny list" <dir>` denies
+# readdir while the mode still reads `drwxr-xr-x` -- no root needed -- so every
+# `-perm` probe reads clean, `ls` on the state-dir ROOT succeeds because the ACL
+# is on a child, and `find` enumerates nothing. Measured before this was fixed:
+# a `role="dialog"` with no focus trap sat there through four `--pass` sign-offs
+# while staying readable by exact path, so a bundler resolving the import got a
+# component the gate could not see. `ls -- <dir>` is NOT the fix and was tried:
+# under this ACL it exits 0 with empty output. Only access(2) -- `[ -r ]` and
+# `[ -x ]` -- honours the ACL.
+#
+# Skips honestly where `chmod +a` does not exist rather than passing silently:
+# this is a macOS-specific mechanism, and a probe that quietly no-ops elsewhere
+# reads as coverage it does not have.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/acl"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/acl/Evil.svelte"
+if chmod +a "$(id -un) deny list" "$d/.claude/.review-board-state/acl" 2>/dev/null; then
+  err=$(we "$d")
+  # Strip the ACL BEFORE rm -rf, or the teardown wedges on the same denial.
+  chmod -N "$d/.claude/.review-board-state/acl" 2>/dev/null
+  if printf '%s' "$err" | grep -q 'cannot be read'; then
+    ok "an ACL-denied state subdir refuses rather than reading as empty"
+  else
+    no "an ACL-denied state subdir refuses rather than reading as empty" "got [$err]"
+  fi
+else
+  ok "an ACL-denied state subdir refuses rather than reading as empty (skipped: no chmod +a here)"
+fi
+rm -rf "$d"
+
+# Vite compiles more than `.css`. Its own matcher in the installed 8.1.5 is
+# `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and IS_SOURCE_EXT carried
+# five of those nine. Build-proven rather than read off the regex: a scratch
+# project using this repo's own vite compiled a state-dir `.pcss` into shipped
+# CSS carrying `outline: none` on `:focus-visible`, and
+# `--grounds formatting-only` recorded cleanly over it.
+for ext in pcss postcss sss stylus scss less; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  printf ':root{--x:1}.focus-invisible:focus-visible{outline:none}\n' \
+    > "$d/.claude/.review-board-state/theme.$ext"
+  err=$(we "$d")
+  if printf '%s' "$err" | grep -q "theme.$ext"; then
+    ok "a stylesheet vite compiles refuses in the state dir (.$ext)"
+  else
+    no "a stylesheet vite compiles refuses in the state dir (.$ext)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# The same extensions must also be unwaivable tree-wide: WAIVER_NEVER carried
+# only `.css`, so `assets/theme.pcss` outside `src/` waived cleanly anywhere.
+for ext in pcss postcss sss stylus scss less; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  mkdir -p "$d/assets"
+  printf '.focus-invisible:focus-visible{outline:none}\n' > "$d/assets/theme.$ext"
+  if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+    no "a stylesheet vite compiles is not waivable outside src/ (.$ext)" "waiver was accepted"
+  else
+    ok "a stylesheet vite compiles is not waivable outside src/ (.$ext)"
+  fi
+  rm -rf "$d"
+done
+
 # Case. `renders()` has always lowercased; `is_source` does not, and the two
 # disagreeing let `Evil.SVELTE` escape this guard while `renders()` would forbid
 # waiving the identical file anywhere else in the tree.
@@ -985,20 +1053,44 @@ fi
 rm -rf "$d"
 
 # The refusal must never hand a person an internal token where a path belongs.
-# The first version printed the walk's own `__WALK_TRUNCATED__` sentinel into
-# the message as though it were a filename, in a fix whose stated rationale is
-# that a named refusal is the actionable one. Checked across every reason the
-# detector can emit, by driving the formatter directly -- provoking all four
-# through fixtures would need a 750-file directory and a newline-named file for
-# no extra discrimination.
+# An earlier version of THIS PROBE did not pin that. A reviewer made the
+# detector emit `__WALK_TRUNCATED__` as its reason; the sentinel duly surfaced
+# in the sentence -- via the formatter's `*)` arm, which echoed its argument
+# verbatim -- while this probe stayed green and the leak showed up only inside a
+# neighbouring probe's failure payload. Its only live discrimination was that
+# the fallback existed and returned non-empty. The reasons it fed were all ones
+# the detector emits, none of which can contain a sentinel, so it was scanning
+# for something its own inputs could not produce.
+#
+# It now feeds sentinel-BEARING reasons -- the shape a carelessly added reason
+# would produce -- and asserts three properties: no arm leaks an internal token,
+# no arm returns empty (an empty WORK_ERROR is a block with no explanation,
+# which is the livelock class), and each known reason produces its own
+# distinguishable sentence rather than silently falling through to the default.
+#
+# `source:` is exempt from the token scan by design: that arm interpolates a
+# real path, and a file genuinely named `__WALK_TRUNCATED__.svelte` should be
+# named. Driving the formatter directly is deliberate -- `deep` and `unreadable`
+# have their own fixtures above, and the remaining arms are reachable only from
+# states the detector cannot currently produce. (An earlier version of this
+# comment justified that with "a 750-file directory", which is
+# `WALK_HIDDEN_CAP`, belonging to `walk_hidden_dir`; this walk deliberately has
+# no cap.)
+fmt() { (cd "$HOOKS_SRC/../.." && bash -c '. .claude/hooks/work-hash.sh; state_dir_refusal "$1" "test"' _ "$1"); }
 bad=""
-for reason in "source:x/y.svelte" "unreadable:$STATE_DIR_PROBE" "deep:$STATE_DIR_PROBE" "newline:$STATE_DIR_PROBE" "wat:$STATE_DIR_PROBE"; do
-  m=$(cd "$HOOKS_SRC/../.." && bash -c '. .claude/hooks/work-hash.sh; state_dir_refusal "$1" "test"' _ "$reason")
-  case "$m" in
-    *__WALK_*|*__DENIED_*) bad="${bad} ${reason}" ;;
-  esac
+for reason in "unreadable:$STATE_DIR_PROBE" "deep:$STATE_DIR_PROBE" "newline:$STATE_DIR_PROBE" \
+              "__WALK_TRUNCATED__:$STATE_DIR_PROBE" "__WALK_NEWLINE__:x" "wat:$STATE_DIR_PROBE"; do
+  m=$(fmt "$reason")
   [ -z "$m" ] && bad="${bad} ${reason}(empty)"
+  case "$m" in
+    *__WALK_*|*__DENIED_*) bad="${bad} ${reason}(token-leak)" ;;
+  esac
 done
+# Each known arm distinguishable, or three of them could be the default arm
+# wearing three different inputs.
+[ "$(fmt "unreadable:$STATE_DIR_PROBE")" = "$(fmt "deep:$STATE_DIR_PROBE")" ] && bad="${bad} unreadable/deep(identical)"
+[ "$(fmt "deep:$STATE_DIR_PROBE")" = "$(fmt "newline:$STATE_DIR_PROBE")" ] && bad="${bad} deep/newline(identical)"
+case "$(fmt "source:x/y.svelte")" in *x/y.svelte*) ;; *) bad="${bad} source(path-dropped)" ;; esac
 if [ -z "$bad" ]; then
   ok "every refusal reason formats to a sentence, never a bare token"
 else
