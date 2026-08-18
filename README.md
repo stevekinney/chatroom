@@ -57,7 +57,7 @@ To move to a newer release, run `bun run sync:cinder` (see the scripts table bel
 
 ## Known upstream friction
 
-Tracked upstream issues against Cinder and agent-bureau — see [CLAUDE.md](./CLAUDE.md#known-upstream-friction) for the current list and the filing convention (`gh issue create`, routed by package: `@lostgradient/cinder`, `@lostgradient/chat`, and `@lostgradient/editor` → `stevekinney/cinder`; `conversationalist`/`armorer` → `stevekinney/agent-bureau`). Run `bun run check:upstream` to see whether any referenced issue has since closed.
+Tracked upstream issues against Cinder and agent-bureau — see [CLAUDE.md](./CLAUDE.md#known-upstream-friction) for the current list and filing convention. File owned-package work in its Linear team first (`CIN` for Cinder packages and `AB` for agent-bureau), with a native `blocked by` relation to the affected chatroom work; use `gh issue create` only when the owning repository has no Linear team. Run `bun run check:upstream` to see whether any referenced issue has since closed.
 
 ## Coverage roadmap
 

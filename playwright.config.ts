@@ -52,6 +52,11 @@ const CROSS_ENGINE = [
 ];
 
 export default defineConfig({
+	// The complete suite starts three application processes and runs Chromium,
+	// WebKit, and Firefox. Concurrent browser workers intermittently starve those
+	// shared processes on this machine; one keeps the interaction suite deterministic
+	// contention. This is capacity control, not a timeout or retry workaround.
+	workers: 1,
 	// With a SINGLE webServer Playwright infers `baseURL` from its port; with an
 	// array it does not, and every relative `page.goto('/…')` in the suite would
 	// fail. Set it explicitly to the production preview, which is what all but
