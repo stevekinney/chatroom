@@ -207,14 +207,10 @@ NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
 # So the walk stops inferring absence from a short read and asks `find` whether
 # it finished. That covers every shape that stops it TRAVERSING -- every mode
 # denial and every ACL variant tried so far -- because it tests the thing that
-# matters rather than one mechanism that can cause it. It does NOT cover a
-# denial on reading a FILE's contents: `find` never opens files, so
-# `chmod +a "<user> deny read"` on one leaves mode bits clean, every exit status
-# 0, and `cat`/`shasum` failing into `2>/dev/null`, which makes two different
-# bodies hash identically. Pre-existing, still open, and recorded in the known
-# gaps rather than left implied by a sentence that once claimed "every
-# permission shape".
+# matters rather than one mechanism that can cause it. A file-content denial is
+# distinct: `find` never opens files, so the reads below must report failure.
 WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
+FILE_UNREADABLE_SENTINEL='__FILE_UNREADABLE__'
 
 # Prints the first source file hiding inside a PRUNED `.git` directory under
 # $1, or nothing.
@@ -1520,30 +1516,34 @@ compute_work_hash() {
                 [ "$inner" = "$NEWLINE_IN_PATH_SENTINEL" ] && continue
                 [ "$inner" = "$WALK_UNREADABLE_SENTINEL" ] && continue
                 # SIZE on the name line, because the bodies below are
-                # concatenated by `xargs -0 cat` with no separator and the name
+                # concatenated with no separator and the name
                 # lines carry no length. Two adjacent files in `LC_ALL=C` order
                 # could therefore trade content across their boundary -- one
                 # emptied, the other holding a `role="dialog"` with no focus
                 # trap -- and hash identically, so a four-PASS sign-off on the
-                # first state cleared the second. Batching is kept (a `cat` per
-                # file cost 1.7s at 600 files); one `wc -c` per file is cheap by
-                # comparison and makes the boundary part of the hashed stream.
-                if is_hashable "$inner"; then printf 'externally-hidden:%s:%s\n' "$inner" "$(wc -c < "$inner" 2>/dev/null | tr -d ' ')"
-                else printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(shasum -a 256 < "$inner" 2>/dev/null | cut -d' ' -f1)"
+                # first state cleared the second. The content read is checked
+                # explicitly, so an ACL-denied body cannot hash as empty.
+                if is_hashable "$inner"; then
+                  __size=$(wc -c < "$inner" 2>/dev/null) || { printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; continue; }
+                  printf 'externally-hidden:%s:%s\n' "$inner" "$(printf '%s' "$__size" | tr -d ' ')"
+                else
+                  __blob=$(shasum -a 256 < "$inner" 2>/dev/null) || { printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; continue; }
+                  printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(printf '%s' "$__blob" | cut -d' ' -f1)"
                 fi
               done
               printf '%s\n' "$__names" | while IFS= read -r inner; do
                 [ -n "$inner" ] && [ "$inner" != "$WALK_UNREADABLE_SENTINEL" ] \
                   && [ "$inner" != "$WALK_TRUNCATED_SENTINEL" ] && [ "$inner" != "$NEWLINE_IN_PATH_SENTINEL" ] \
-                  && is_hashable "$inner" && printf '%s\0' "$inner"
-              done | xargs -0 cat 2>/dev/null
+                  && is_hashable "$inner" && { cat -- "$inner" 2>/dev/null || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"; }
+              done
             elif [ -e "$f" ] && ! is_artifact "$f"; then
               if is_hashable "$f"; then
                 printf 'externally-hidden:%s\n' "$f"
-                cat -- "$f" 2>/dev/null
+                cat -- "$f" 2>/dev/null || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"
               else
-                printf 'externally-hidden-blob:%s:%s\n' "$f" \
-                  "$(shasum -a 256 < "$f" 2>/dev/null | cut -d' ' -f1)"
+                __blob=$(shasum -a 256 < "$f" 2>/dev/null) || printf '%s\n' "$FILE_UNREADABLE_SENTINEL"
+                [ -n "${__blob:-}" ] && printf 'externally-hidden-blob:%s:%s\n' "$f" \
+                  "$(printf '%s' "$__blob" | cut -d' ' -f1)"
               fi
             fi
         fi
@@ -1555,6 +1555,10 @@ compute_work_hash() {
   fi
   if printf '%s' "$externally_hidden" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
     WORK_ERROR="an ignored directory could not be read all the way down, twice running, so this gate cannot tell whether work hides in it. Usually a permission denial or an ACL (\`ls -lde\` shows one); a directory being written while this ran clears on a re-run and is not reported here."
+    return 1
+  fi
+  if printf '%s' "$externally_hidden" | grep -qxF "$FILE_UNREADABLE_SENTINEL"; then
+    WORK_ERROR="an ignored file could not be read, so this gate cannot tell whether reviewable content hides in it. Fix its permissions, or move it out of the work tree."
     return 1
   fi
 

@@ -1771,18 +1771,23 @@ for mode in 400 000; do
   rm -rf "$d"
 done
 
-# An unreadable FILE: cat/shasum swallow EPERM, so the name reached the hash and
-# the content did not -- arbitrary content changes invisible with no error.
+# An unreadable FILE must block even where the current user can bypass mode bits.
+# A `wc` shim makes the size-read failure deterministic on every platform.
 d=$(new_repo) || exit 1
 (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
-rm -f "$d/.claude/.review-board-state/last-cleared"
-(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-signoff.sh --initialize) >/dev/null 2>&1
-mkdir -p "$d/tmp"; printf '<div role="dialog"></div>\n' > "$d/tmp/C.svelte"; chmod 000 "$d/tmp/C.svelte"
-out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
-chmod 644 "$d/tmp/C.svelte"
-printf '%s' "$out" | grep -q "cannot be read" &&
+mkdir -p "$d/tmp" "$d/fakebin"; printf '<div role="dialog"></div>\n' > "$d/tmp/C.svelte"
+signoff "$d" --pass test-integrity-auditor --pass harness-skeptic \
+  --pass contract-auditor --pass a11y-ssr-auditor >/dev/null 2>&1
+cat > "$d/fakebin/wc" <<'SHIM'
+#!/usr/bin/env bash
+case "$*" in *-c*) exit 1 ;; *) exec /usr/bin/wc "$@" ;; esac
+SHIM
+chmod +x "$d/fakebin/wc"
+printf '<main role="dialog"></main>\n' > "$d/tmp/C.svelte"
+out=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$d/fakebin:$PATH" bash .claude/hooks/review-board-gate.sh <<<"$GATE_STDIN" 2>&1)
+printf '%s' "$out" | grep -q "could not be read" &&
   ok "an unreadable file inside an ignored tree blocks" ||
-  no "an unreadable file inside an ignored tree blocks" "gate was silent"
+  no "an unreadable file inside an ignored tree blocks" "gate output: $out"
 rm -rf "$d"
 
 
