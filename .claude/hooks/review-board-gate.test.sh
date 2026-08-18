@@ -1158,6 +1158,123 @@ case "$res" in
 esac
 rm -rf "$d"
 
+# The `-maxdepth` BOUNDARY, which every permission probe in this file used to
+# miss because they all plant their fixture at depth 1. `find` never OPENS a
+# directory sitting at exactly `-maxdepth`, so a denial that blocks only descent
+# lets the `-type f` walk exit 0 with the contents silently absent. Measured at
+# depths 1, 11 and 12: `chmod 000`, `111`, `666` and an ACL denying `list` all
+# exit 1 at 1 and 11 and 0 at exactly 12, on BSD find and bfs alike. Only the
+# deeper depth-probe walk opens it, which is why its exit status is now read.
+#
+# The two scopes need DIFFERENT shapes, which is the trap here. In the state dir
+# `chmod 111` discriminates, because that guard has no permission probe left at
+# all. Tree-wide it does NOT: `compute_work_hash`'s bounds loop still carries
+# `-perm` arms with no `-maxdepth`, so they stat the boundary directory from its
+# parent and catch a mode denial there for their own reasons. Measured -- the
+# first version of this probe used `chmod 111` for both and stayed green with
+# the tree-wide check deleted. An ACL denying `list` leaves mode bits clean, so
+# only the deeper depth-probe walk sees it.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    root="$d/.claude/.review-board-state"
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    root="$d/tmp"
+  fi
+  # EXACTLY twelve levels below the walk root, which is the boundary: the root
+  # is depth 0, so `l` is depth 12 and `find -maxdepth 12` never opens it. An
+  # earlier version used eleven, where the ordinary walk still opens the
+  # directory and its own exit status catches the denial -- so the probe passed
+  # with the boundary check deleted, for a reason that had nothing to do with
+  # the boundary.
+  deep="$root/a/b/c/d/e/f/g/h/i/j/k/l"
+  mkdir -p "$deep"
+  printf '%s\n' "$evil" > "$deep/Evil.svelte"
+  if [ "$scope" = state-dir ]; then
+    chmod 111 "$deep"; err=$(we "$d"); chmod 755 "$deep"
+    if [ -n "$err" ]; then
+      ok "a denial at exactly the depth bound refuses ($scope)"
+    else
+      no "a denial at exactly the depth bound refuses ($scope)" "no refusal; got []"
+    fi
+  elif chmod +a "$(id -un) deny list" "$deep" 2>/dev/null; then
+    err=$(we "$d"); chmod -N "$deep" 2>/dev/null
+    if [ -n "$err" ]; then
+      ok "a denial at exactly the depth bound refuses ($scope)"
+    else
+      no "a denial at exactly the depth bound refuses ($scope)" "no refusal; got []"
+    fi
+  else
+    ok "a denial at exactly the depth bound refuses ($scope, skipped: no chmod +a here)"
+  fi
+  rm -rf "$d"
+done
+
+# The retry probe that separates CHURN from an unreadable tree. `find`'s exit
+# status answers "did I finish", which is a strictly larger set than "could I
+# read": a directory removed while it was descending also makes it non-zero, and
+# this repo's own `.gitignore` lists `test-results/`, which Playwright creates
+# and destroys throughout a run. Refusing on the bare status made the gate DENY
+# a churning tree it had allowed, blaming an ACL that was not there.
+#
+# Driven with a `find` SHIM rather than a background `rm -rf` race, because a
+# racy probe that passes when the race is lost is worse than none. The shim
+# fails a bounded number of times and then delegates, which is exactly the shape
+# churn has and nothing like the shape a permission denial has.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/tmp/parts" && printf 'note\n' > "$d/tmp/parts/a.md"
+shimdir=$(mktemp -d) || exit 1
+realfind=$(command -v find)
+# Fails only the FIRST call, then delegates: transient, and must not refuse.
+cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+if [ ! -f "$shimdir/fired" ]; then : > "$shimdir/fired"; exit 1; fi
+exec $realfind "\$@"
+SHIM
+chmod +x "$shimdir/find"
+err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if [ -z "$err" ]; then
+  ok "a transient find failure does not refuse"
+else
+  no "a transient find failure does not refuse" "spurious refusal: [$err]"
+fi
+# Fails every time: a real denial, and must refuse.
+cat > "$shimdir/find" <<SHIM
+#!/bin/sh
+exit 1
+SHIM
+chmod +x "$shimdir/find"
+err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
+if [ -n "$err" ]; then
+  ok "a persistent find failure still refuses"
+else
+  no "a persistent find failure still refuses" "no refusal; got []"
+fi
+rm -rf "$shimdir" "$d"
+
+# A FILENAME must not be able to forge a sentinel. The consumers matched with
+# `case "$blob" in *"$SENTINEL"*` over a multi-line blob, so a file called
+# `prefix__WALK_UNREADABLE__suffix.txt` in any ignored directory produced a
+# refusal naming a condition that did not exist, unclearable by the remedy the
+# message gave -- tree-wide, and pre-existing for two of the three sentinels.
+for forge in "__WALK_UNREADABLE__" "prefix__WALK_UNREADABLE__suffix.txt" \
+             "__WALK_TRUNCATED__" "__WALK_NEWLINE__.txt"; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/tmp"
+  printf 'ordinary content\n' > "$d/tmp/$forge"
+  err=$(we "$d")
+  if [ -z "$err" ]; then
+    ok "a filename cannot forge a walk sentinel ($forge)"
+  else
+    no "a filename cannot forge a walk sentinel ($forge)" "spurious refusal: [$err]"
+  fi
+  rm -rf "$d"
+done
+
 # The `newline` arm of state_dir_refusal, which a reviewer showed IS producible
 # by the detector -- so the formatter probe's claim that only `*)` is
 # unreachable was wrong, and deleting this arm left the whole suite green.
