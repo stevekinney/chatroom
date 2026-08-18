@@ -544,22 +544,27 @@ state_dir_hides_source() {
   # then cannot even classify the entry, so `-type d` never names the directory
   # for a per-directory test to run on. Chasing mechanisms was the mistake.
   #
-  # Asking `find` whether it FINISHED (below, via its exit status) subsumes all
-  # of them: `chmod 000`, `chmod 111`, `chmod 666`, `deny list` and
-  # `deny readattr` all make it exit non-zero. Measured: with the exit-status
-  # check in place, deleting the access(2) loop and both `-perm` arms changed no
-  # probe at all, which is what unpinnable redundancy looks like. One mechanism
-  # that tests the thing that matters beats four that test its causes.
+  # Asking `find` whether it FINISHED (below, via its exit status) covers all of
+  # them -- `chmod 000`, `111`, `666`, `deny list`, `deny readattr` -- EXCEPT at
+  # the walk's own `-maxdepth`, where `find` never opens the directory and four
+  # of the five exit 0. The depth walk goes one level further and is what closes
+  # that; an earlier version of this comment said "subsumes all of them" flat and
+  # a reviewer refuted it by measuring each shape at depths 1, 11 and 12.
+  #
+  # Deleting the access(2) loop and both `-perm` arms alongside this was
+  # justified as "unpinnable redundancy". They were unpinnable, NOT redundant --
+  # removing production code the test environment cannot reach is the same
+  # disease as writing production code to satisfy a test, pointed the other way,
+  # and the boundary gap above is what it cost. What makes the deletion
+  # defensible is the boundary check, not the argument given for it at the time.
 
-  # Two -maxdepth counts rather than -mindepth. The hazard that forced this form
-  # on compute_work_hash's bounds loop -- BSD find silently dropping -prune the
-  # moment -mindepth appears anywhere in the expression -- cannot bite HERE,
-  # since this walk has no -prune at all; the two-count form is kept for
-  # consistency with that loop rather than out of necessity, and saying which is
-  # the point. Equal counts mean nothing sits at the deeper level; anything at
-  # depth+2 or below has an ancestor directory at depth+1, so the -type-less
-  # -print catches it without needing a -type filter.
-  local __d_in __d_out
+  # NOT two -maxdepth counts, which is what this was and what the comment here
+  # used to explain. Two walks counting a moving tree race against each other,
+  # and re-running both on a mismatch re-rolls the same dice -- measured at 25
+  # false "nests deeper" refusals out of 25 against a Playwright-shaped writer.
+  # `-mindepth` is still unusable (BSD find silently drops `-prune` the moment
+  # it appears anywhere in the expression), so depth is derived from the walk's
+  # own output instead: the deepest path it printed, by separator count.
   # The DEEPER walk's exit status is captured, and it is the only thing that
   # sees the boundary. `find` never OPENS a directory sitting at exactly
   # `-maxdepth`, so a denial that blocks only descent -- `chmod 000`, `111`,
