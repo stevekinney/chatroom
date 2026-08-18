@@ -504,11 +504,19 @@ verb further out — `chmod +a "<user> deny ..."`, no root required.
   no board, gate still allows — and building the component with this repo's own vite to confirm
   `aria-modal="true"` with no focus trap reached the bundle.
 
-The third design asks `find` whether it FINISHED, via its exit status, and that subsumes all of
-them: `chmod 000`, `111`, `666`, `deny list` and `deny readattr` all make it exit non-zero. It is
-also _less_ code — with the exit-status check in place, deleting the access(2) loop and both
-`-perm` arms changed no probe at all, which is what unpinnable redundancy looks like, so they came
-out. One mechanism that tests the thing that matters beats four that test its causes. A separate
+The third design asks `find` whether it FINISHED, via its exit status. That covers all five —
+`chmod 000`, `111`, `666`, `deny list` and `deny readattr` — **except at the walk's own `-maxdepth`
+boundary**, where `find` never opens the directory and four of the five exit 0. An earlier version
+of this paragraph asserted "subsumes all of them" flat, and a reviewer refuted it by measuring each
+shape at depths 1, 11 and 12 on two `find` binaries. The boundary is covered by reading the exit
+status of the _deeper_ depth-probe walk, the only one that opens it.
+
+Deleting the access(2) loop and both `-perm` arms alongside that was justified here as "unpinnable
+redundancy", and that framing was wrong in a way worth keeping. They were **unpinnable, not
+redundant**: production code was removed because the test environment could not reach it, which is
+the same disease as writing production code to satisfy a test, pointed the other way — and the
+boundary regression above is what it cost. What makes the deletion defensible now is the boundary
+check, not the argument given for it at the time. A separate
 arm covers the state directory's own root, where `[ -d ]` is itself a stat and a `readattr` denial
 turned "this directory holds a component" into "there is no state directory"; it asks the parent
 for its entries, since readdir supplies names without stat'ing them, and is paired with a negative
@@ -519,8 +527,10 @@ proposed a per-directory `ls` as the remedy for the first ACL. This log recorded
 work either — under that ACL `ls` exits 0 with empty output". That was false, and measured in the
 wrong shell: `ls` here is an alias for `eza`, and `/bin/ls` — which is what a hook gets — exits 1.
 A second reviewer measured it four ways (`/bin/ls` rc=1, `ls -A` rc=1, `eza` rc=2, python
-`os.listdir` raising) and located the error exactly: `ls` exits 0 with empty output only on the
-_parent_ of the ACL'd directory, which is the preceding sentence in the same comment. Two adjacent
+`os.listdir` raising) and located the error exactly: on the ACL'd directory `ls` exits 1, and on
+its _parent_ it exits 0 **and prints the entry** — so "exits 0 with empty output" described no
+directory in the fixture at all. A later reviewer caught that this correction had itself carried
+forward the "empty output" half of the claim it was correcting. Two adjacent
 facts, conflated, and shipped into three files as a reason to reject a remedy that would in fact
 have worked for that ACL. The remedy is still not what shipped — it does not survive `deny
 readattr` either — but it was dismissed on a measurement that does not hold.
@@ -532,7 +542,7 @@ this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `out
 `.svg`, which was in `IS_SOURCE_EXT` only and so waivable outside `src/` despite carrying `role`
 and `aria-label`.
 
-**Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no depth or readability probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on.
+**Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no _depth_ probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on. It does now have its own readability refusal; an earlier version of this sentence said otherwise and was measured false.
 
 **A methodology rule this cost three rounds to learn.** A suite number measured inside the shared session scratchpad is untrustworthy unless the runner hashes the hooks before and after the run. Reviewers work concurrently and pick colliding directory names; one caught a peer mid-run with `ps` and matched the file it was seeing to the artifact of its own mutation. A timed-out sweep in the main session also left a mutation in the real tree, caught only by a hash check afterwards. Every figure in the table above comes from a run whose start and end state were hash-verified.
 

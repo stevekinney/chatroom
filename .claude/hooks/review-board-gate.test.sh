@@ -33,8 +33,10 @@
 #
 # One more known gap: the waiver-side newline refusal in `waiver_forbidden_
 # paths` (work-hash.sh, mirroring the gate-side sentinel) has no probe of
-# its own -- both newline probes in this file drive `compute_work_hash`
-# directly. Confirmed NOT a fail-open (deleting just that arm still refuses,
+# its own -- three probes in this file now exercise a newline, and the
+# state-dir one added for CHR-19 drives `waiver_forbidden_paths` too, but
+# deleting only the waiver-side arm still leaves the suite fully green, so
+# the gap is unchanged. Confirmed NOT a fail-open (deleting just that arm still refuses,
 # via `compute_work_hash` running after `waiver_forbidden_paths` clears in
 # `review-board-signoff.sh`, just with a `Cannot sign off:` prefix instead
 # of `Cannot waive:`), so this is a coverage gap behind a probed guard, not
@@ -830,10 +832,13 @@ done
 # the refusal, which a review round measured as decorative -- the guard fires
 # identically with and without it. That rationale is real, but it belongs to the
 # `:(exclude)` probe further down, where it IS load-bearing. Bounding the walk
-# to `-maxdepth 1` reddens this probe and the nine artifact shapes below it --
-# ten in all, which is what ROADMAP_PROGRESS.md's table says. An earlier version
-# of this comment claimed "this probe alone", false about exactly the thing this
-# suite's discipline rests on: attributing a mutation to the set it reddens.
+# to `-maxdepth 1` reddens this probe, the nine artifact shapes below it, and
+# the two state-dir readability probes -- twelve in all, matching
+# ROADMAP_PROGRESS.md's table. This figure has been wrong twice: first "this
+# probe alone", then "ten", the latter true only until readability detection
+# moved onto this same bounded walk. Attributing a mutation to the set it
+# reddens is what this suite's discipline rests on, and a number that drifts
+# when the code moves is why the table is re-measured whole, never patched.
 d=$(new_repo) || exit 1
 mkdir -p "$d/.claude/.review-board-state/signoffs"
 printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
@@ -1229,9 +1234,26 @@ mkdir -p "$d/tmp/parts" && printf 'note\n' > "$d/tmp/parts/a.md"
 shimdir=$(mktemp -d) || exit 1
 realfind=$(command -v find)
 # Fails only the FIRST call, then delegates: transient, and must not refuse.
+# Fails only calls naming the ignored directory under test, and only the first.
+# Two earlier versions pinned nothing and both passed: failing "the first find
+# call" hit a depth probe, whose own re-measure absorbed it; failing the first
+# `-print0` hit the STATE-DIR walk, whose own retry absorbed it; and failing the
+# first call naming this directory hit the DEPTH probe, whose re-measure
+# absorbed it. It takes both conditions -- this directory AND `-print0` -- to
+# reach `walk_hidden_dir`'s own walk, which is the retry whose absence was
+# measured as a live false refusal. Each of the three earlier versions passed
+# while pinning nothing, which is the failure mode this suite exists to refuse,
+# so each was found by deleting the retry and watching the probe stay green.
 cat > "$shimdir/find" <<SHIM
 #!/bin/sh
-if [ ! -f "$shimdir/fired" ]; then : > "$shimdir/fired"; exit 1; fi
+dir=no; p0=no
+for a in "\$@"; do
+  case "\$a" in *tmp*) dir=yes ;; esac
+  [ "\$a" = "-print0" ] && p0=yes
+done
+if [ "\$dir" = yes ] && [ "\$p0" = yes ] && [ ! -f "$shimdir/fired" ]; then
+  : > "$shimdir/fired"; exit 1
+fi
 exec $realfind "\$@"
 SHIM
 chmod +x "$shimdir/find"
@@ -1242,9 +1264,16 @@ else
   no "a transient find failure does not refuse" "spurious refusal: [$err]"
 fi
 # Fails every time: a real denial, and must refuse.
+# Fails every `-print0` call: a real denial, which must survive the retry.
 cat > "$shimdir/find" <<SHIM
 #!/bin/sh
-exit 1
+dir=no; p0=no
+for a in "\$@"; do
+  case "\$a" in *tmp*) dir=yes ;; esac
+  [ "\$a" = "-print0" ] && p0=yes
+done
+[ "\$dir" = yes ] && [ "\$p0" = yes ] && exit 1
+exec $realfind "\$@"
 SHIM
 chmod +x "$shimdir/find"
 err=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" PATH="$shimdir:$PATH" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_ERROR"')
@@ -1317,7 +1346,7 @@ rm -rf "$d"
 # have their own fixtures above, and the remaining arms are reachable only from
 # the `*)` state, which the detector cannot produce. An earlier version of this
 # comment said that of `newline` too, which was wrong -- a newline-named file in
-# the state dir reaches it, and there is now a fixture three probes up that
+# the state dir reaches it, and the newline fixture above this one
 # proves it at both entry points. That comment also justified the choice with
 # "a 750-file directory", which is
 # `WALK_HIDDEN_CAP`, belonging to `walk_hidden_dir`; this walk deliberately has

@@ -418,7 +418,11 @@ anything touching a rendered surface — `WAIVER_NEVER` in `work-hash.sh` covers
 `.svelte`, `.html`, `.css`, the build config that decides what SSRs and how it hydrates
 (`vite.config.ts`, `svelte.config.js`, `postcss.config.cjs`, `tailwind.config.ts` — this repo has
 no `svelte.config.js`, so `vite.config.ts` is where the `sveltekit()` plugin actually lives), and
-`package.json` / `bun.lock`, which pin the component versions. That refusal is the
+`package.json` / `bun.lock`, which pin the component versions. It also covers every extension vite
+compiles as CSS — `.scss`, `.sass`, `.less`, `.styl`, `.stylus`, `.pcss`, `.postcss`, `.sss` — and
+`.svg`, which carries `role`, `aria-label` and `<title>`. Those nine were added after a `.pcss` in
+an ignored directory was build-proven into shipped CSS carrying `outline: none` on
+`:focus-visible`, waived cleanly under `formatting-only`. That refusal is the
 script declining to write a waiver file for you, not a gate stopping the edit — you can still skip
 recording anything and proceed unreviewed, which is exactly the discipline this section is asking
 you not to exercise. Waiving work that touches behavior is how this whole mechanism becomes
