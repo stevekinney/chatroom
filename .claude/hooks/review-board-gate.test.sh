@@ -744,6 +744,83 @@ else
 fi
 rm -rf "$d"
 
+# The IN-TREE half of the same hazard, which the guard above deliberately does
+# not cover. `WORK_DENY` is passed to `ignored_matching_paths` at all three of
+# its call sites and, until `path_is_denied` existed, did nothing whatsoever for
+# the state DIRECTORY: git honors `:(exclude)` for an individually-named file
+# and reports a collapsed ignored directory whole regardless of the pathspec
+# (all three spellings -- bare, trailing slash, `/**`). The directory stayed out
+# of the hash only because `is_source` happens to reject `.signoff` and the
+# extensionless `last-cleared`, so a source-extension file landing there hashed,
+# and every sign-off written afterwards moved the hash again -- the livelock the
+# probe above diagnoses for an EXTERNAL rule, reached instead through an
+# ordinary in-tree `.gitignore` rule, where that diagnostic is silent by design.
+#
+# Asserts the RELATION, not a digest: hash values are tree-specific and no
+# literal would reproduce anywhere else. `h1` is nonempty because the
+# `.gitignore` commit lands AFTER new_repo's `--initialize`, so it is itself
+# work in flight against the baseline -- deliberately NOT re-initialized here,
+# since an empty `h1` would let a double-failure pass as `"" = ""`.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+wh() { (cd "$1" && CLAUDE_PROJECT_DIR="$1" bash -c '. .claude/hooks/work-hash.sh; compute_work_hash; echo "$WORK_HASH"'); }
+h1=$(wh "$d")
+printf 'export const sneak = 1\n' > "$d/.claude/.review-board-state/sneak.ts"
+h2=$(wh "$d")
+# A REWRITE too, not just the create: the original finding moved the hash on
+# both, and a filter that only skipped new paths would pass the create alone.
+printf 'export const sneak = 2\n' > "$d/.claude/.review-board-state/sneak.ts"
+h3=$(wh "$d")
+# One level down, in the directory the sign-offs themselves live in -- the walk
+# enumerates recursively, so a filter applied to the collapsed top-level entry
+# only would still let this through.
+mkdir -p "$d/.claude/.review-board-state/signoffs"
+printf 'export const deep = 3\n' > "$d/.claude/.review-board-state/signoffs/deep.ts"
+h4=$(wh "$d")
+if [ -z "$h1" ]; then
+  no "a source-extension file in the state dir does not move the hash" "h1 was empty; the fixture proves nothing"
+elif [ "$h1" = "$h2" ] && [ "$h1" = "$h3" ] && [ "$h1" = "$h4" ]; then
+  ok "a source-extension file in the state dir does not move the hash"
+else
+  no "a source-extension file in the state dir does not move the hash" "h1=[$h1] h2=[$h2] h3=[$h3] h4=[$h4]"
+fi
+rm -rf "$d"
+
+# DIRECTION is the fail-OPEN risk in that filter, and it is invisible from the
+# probe above because the state dir has no ignored ancestor. A denied path
+# sitting UNDER an ignored directory must NOT suppress that directory: were the
+# test written the other way round, an ignored `.claude/` would drop on account
+# of `.claude/.review-board-state` and take `.claude/hooks` -- this gate's own
+# definition -- out of the hash with it. Driven against `ignored_matching_paths`
+# directly rather than through compute_work_hash, whose STATE_DIR guard and
+# artifact rules would otherwise decide the outcome and hide which arm answered.
+d=$(new_repo) || exit 1
+(cd "$d" && printf 'foo/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/foo/bar"
+printf 'export const x = 1\n' > "$d/foo/bar/x.ts"
+imp() { (cd "$1" && shift && bash -c '. .claude/hooks/work-hash.sh; ignored_matching_paths "$@"' _ "$@"); }
+if [ "$(imp "$d" . ':(exclude)foo')" = "" ]; then
+  ok "an excluded ignored directory is suppressed"
+else
+  no "an excluded ignored directory is suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
+fi
+if [ "$(imp "$d" . ':(exclude)foo/bar')" = "foo/" ]; then
+  ok "an ignored directory is kept when the excluded path is below it"
+else
+  no "an ignored directory is kept when the excluded path is below it" "got [$(imp "$d" . ':(exclude)foo/bar')]"
+fi
+# `foo` is a string prefix of `foobar` without being a path prefix of it, so a
+# bare `${p#$deny}`-style test would drop the wrong directory.
+mkdir -p "$d/foobar"
+(cd "$d" && printf 'foo/\nfoobar/\n' > .gitignore) >/dev/null 2>&1
+printf 'export const y = 2\n' > "$d/foobar/y.ts"
+if [ "$(imp "$d" . ':(exclude)foo')" = "foobar/" ]; then
+  ok "a string-prefix match that is not a path prefix is not suppressed"
+else
+  no "a string-prefix match that is not a path prefix is not suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
+fi
+rm -rf "$d"
+
 # Istanbul's own layout puts `src` BELOW the artifact root. Escaping on any `src`
 # segment regardless of position hashed 3000 coverage files at 7.05s and blocked.
 # The scan is left-to-right now: first matching segment decides.

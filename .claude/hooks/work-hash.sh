@@ -96,10 +96,15 @@ WAIVER_NEVER=(
 )
 
 # Build artifacts. `git status --ignored=matching -- ':(exclude)node_modules'`
-# does NOT filter these: a collapsed ignored-directory entry is reported whole
-# regardless of the pathspec, verified against `coverage/` and `node_modules/`
-# both bare and as `/**`. So the exclusion the enumeration thought it had was
-# inert, and the bound has to be applied to the paths themselves.
+# does NOT filter these on git's side: a collapsed ignored-directory entry is
+# reported whole regardless of the pathspec, verified against `coverage/` and
+# `node_modules/` both bare and as `/**`. `path_is_denied` now applies those
+# excludes to the paths themselves once they are back from git, so the two
+# enumerations that pass artifact excludes DO get them honored -- but this list
+# is still what bounds the walk everywhere else, including the enumeration that
+# passes WORK_DENY alone and every per-FILE decision `is_artifact` makes inside
+# a directory that was not excluded at all. Deriving the bound from the paths
+# is the load-bearing half either way; the pathspec was never the mechanism.
 ARTIFACT_DIRS=(
   node_modules .svelte-kit dist build test-results playwright-report .turbo
   coverage .nyc_output .cache .next .direnv .output .vercel .netlify .wrangler
@@ -279,6 +284,35 @@ is_hashable() {
   return 0
 }
 
+# True when $1 is one of the denied paths in $2... , or sits underneath one.
+#
+# DIRECTION IS THE WHOLE HAZARD HERE, and getting it backwards is a fail-OPEN.
+# A path is denied only when it IS a denied path or lives UNDER one. The
+# reverse test -- dropping a path because a denied path lives under IT --
+# would drop an ignored `.claude/` on account of `.claude/.review-board-state`
+# and take `.claude/hooks`, this gate's own definition, out of the hash with it.
+# So an ancestor of a denied path is deliberately KEPT and left to be walked.
+#
+# Trailing slashes are stripped from both sides because `git status
+# --ignored=matching` reports a collapsed directory as `foo/` while the
+# pathspec that named it has no slash; without that, the two never compare
+# equal and the filter is inert in exactly the case it exists for.
+#
+# Patterns are QUOTED inside `case` so a denied path containing a glob
+# character matches literally rather than as a pattern -- the same reason the
+# symlink-escape block quotes its own `${__d#":(exclude)"}`.
+path_is_denied() {
+  local __p="${1%/}" __d
+  shift
+  for __d in "$@"; do
+    __d="${__d%/}"
+    [ -z "$__d" ] && continue
+    [ "$__p" = "$__d" ] && return 0
+    case "$__p" in "$__d"/*) return 0 ;; esac
+  done
+  return 1
+}
+
 # Prints "!! "-prefixed paths from `git status --porcelain --ignored=matching`
 # with the prefix stripped, one per output line -- using -z on the git side
 # to correctly read a path containing a literal `"`, `\`, tab, or other
@@ -302,21 +336,67 @@ is_hashable() {
 # the full NUL-safe rewrite of every downstream consumer that a complete fix
 # would need -- confirmed real and demonstrated as a live silent ALLOW by
 # three independent review rounds before this refusal was added.
-#
+
 # Optional leading `-C <dir>` runs against that repo instead of the current
 # one (an embedded gitlink or a linked worktree), matching git's own flag.
+#
+# The `:(exclude)` pathspecs callers pass are honored by git for an
+# individually-named FILE and NOT for a collapsed ignored DIRECTORY:
+# `--ignored=matching` reports such a directory as one entry and emits that
+# entry whole regardless of any exclude pathspec -- confirmed against git
+# 2.55.0 in all three spellings (bare, trailing slash, `/**`), with
+# `:(exclude)CLAUDE.md` as a working control on a file. So `WORK_DENY` was
+# passed at all three call sites and did nothing for `.claude/.review-board-
+# state/`, which stayed out of the hash only because `is_source` happens to
+# reject `.signoff` and the extensionless `last-cleared`. A `.ts` written
+# there DID move the hash, a rewrite moved it again, and the same file one
+# level down in `signoffs/` moved it a third time. Fails CLOSED -- such a file
+# gets hashed rather than hidden -- so the risk was the livelock class the
+# STATE_DIR guard in compute_work_hash exists to diagnose, not an unreviewed
+# component reaching main.
+#
+# Applied HERE rather than at the three call sites, so the exclusion is real
+# once instead of three times and a fourth call site cannot be added without
+# it -- the same reason walk_hidden_dir is THE ONE WALK and
+# ignore_source_is_external is one function. The deny set is DERIVED from the
+# pathspecs actually passed, not a second copy of WORK_DENY, so it cannot
+# drift from the list it mirrors. Only the literal `:(exclude)<path>` form
+# yields a deny prefix; a positive pathspec (`.`) or a magic form this does
+# not recognize yields none, which leaves today's over-inclusive behavior
+# rather than guessing at a bound. The two `-C` call sites pass no excludes at
+# all, so this is a no-op for them by construction.
 ignored_matching_paths() {
-  local __raw __stripped __repo=""
+  local __raw __stripped __repo="" __arg
+  local -a __deny=()
   if [ "$1" = "-C" ]; then
     __repo="$2"
     shift 2
   fi
+  for __arg in "$@"; do
+    # Quoted: unquoted, bash reads `(` as pattern syntax and strips nothing.
+    case "$__arg" in
+      ':(exclude)'*) __deny[${#__deny[@]}]="${__arg#":(exclude)"}" ;;
+    esac
+  done
   git ${__repo:+-C "$__repo"} -c core.fsmonitor=false -c core.quotePath=false \
       -c status.showUntrackedFiles=all status --porcelain -z --ignored=matching -- "$@" 2>/dev/null |
     while IFS= read -r -d '' __raw; do
       __stripped="${__raw#"!! "}"
       [ "$__stripped" = "$__raw" ] && continue
       [ -z "$__stripped" ] && continue
+      # BEFORE the newline refusal, not after: a denied path is not work, and
+      # refusing over one would block on the gate's own state directory --
+      # an unactionable message, which is the livelock class this filter is
+      # closing rather than a safety check worth keeping there.
+      #
+      # `${#__deny[@]}` guard, not a bare `"${__deny[@]}"`: stock macOS
+      # /bin/bash (3.2) treats expanding an EMPTY array under `set -u` as an
+      # unbound variable and dies, which at the two `-C` call sites -- the
+      # ones that pass no excludes -- would take out the gitlink and worktree
+      # checks entirely.
+      if [ ${#__deny[@]} -gt 0 ] && path_is_denied "$__stripped" "${__deny[@]}"; then
+        continue
+      fi
       case "$__stripped" in
         *$'\n'*)
           printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
@@ -899,6 +979,13 @@ compute_work_hash() {
     # bound by inspecting contents you have truncated is circular, and the
     # narrower predicate was applied to the directory PATH while the enumeration
     # below applies its own to the FILES -- so `tmp/` was checked by neither.
+    # `path_is_denied` filtering WORK_DENY paths out upstream of this loop is
+    # not that predicate returning: it is a scope decision made on the path
+    # alone, never on contents, and it only ever removes paths this file has
+    # already declared unreviewable. The one thing it costs is that the state
+    # directory no longer gets these depth, readability and cap bounds -- which
+    # is correct, since nothing in it is work, and an unreadable one fails
+    # loudly in review-board-signoff.sh's own `mkdir -p` rather than silently.
     case "$__walk_out" in *"$NEWLINE_IN_PATH_SENTINEL"*)
       WORK_ERROR="${__hidden_dir} contains a file whose name has a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
       return 1 ;;
