@@ -64,6 +64,10 @@ assert_sandbox() {
   esac
   printf '%s\n' "$real"
 }
+# The state directory path, spelled once for probes that drive work-hash.sh's
+# refusal formatter directly rather than through a fixture.
+STATE_DIR_PROBE='.claude/.review-board-state'
+
 pass=0
 fail=0
 
@@ -753,6 +757,14 @@ rm -rf "$d"
 # sign-off flow actually writes there must never move the hash, or recording a
 # sign-off invalidates the sign-off just recorded.
 #
+# REDUNDANTLY GUARDED, and stated as such rather than counted among the probes a
+# single mutation reddens: `path_is_denied` drops the path AND `is_source`
+# rejects `.signoff`, so either alone keeps this green. It is a regression guard
+# for the historical self-invalidating sign-off, not evidence about this change.
+# Falsifiable, which is the part that matters -- pre-fix work-hash.sh with
+# `.signoff` added to IS_SOURCE_EXT reddens it -- so it is a real property pin
+# rather than an assertion that cannot fail.
+#
 # Asserts the RELATION, not a digest: hash values are tree-specific and no
 # literal would reproduce anywhere else. `h1` is nonempty because the
 # `.gitignore` commit lands AFTER new_repo's `--initialize`, so it is itself
@@ -796,7 +808,7 @@ rm -rf "$d"
 # silent allow) or hashing it (drift with no explanation, which is the livelock
 # CHR-19 killed). Both entry points, because the waiver half is the live half.
 for entry in hash waiver; do
-  d=$(new_repo) || break
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
   (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
   printf '<div role="dialog" aria-modal="true"><button>no trap</button></div>\n' \
     > "$d/.claude/.review-board-state/Evil.svelte"
@@ -811,15 +823,16 @@ for entry in hash waiver; do
   rm -rf "$d"
 done
 
-# The same refusal one level BELOW the denied path, reached the only way that
-# reaches it: a NESTED `.gitignore` inside the state dir. A top-level rule
-# naming `.claude/.review-board-state/signoffs/` does NOT get here -- git
-# suppresses a collapsed entry strictly below an `:(exclude)` path perfectly
-# well and only fails on the entry that IS the excluded path. Verified by
-# sweeping six ignore-rule shapes; this is the one that survives the exclude.
+# The same refusal one level down, which pins RECURSION rather than anything
+# about ignore rules: `state_dir_hides_source` walks the filesystem and its own
+# docblock says it is not conditional on the directory being ignored. An earlier
+# version of this comment credited the nested `.gitignore` below for reaching
+# the refusal, which a review round measured as decorative -- the guard fires
+# identically with and without it. That rationale is real, but it belongs to the
+# `:(exclude)` probe further down, where it IS load-bearing. Bounding the walk
+# to `-maxdepth 1` reddens this probe alone.
 d=$(new_repo) || exit 1
 mkdir -p "$d/.claude/.review-board-state/signoffs"
-printf 'signoffs/\n' > "$d/.claude/.review-board-state/.gitignore"
 printf '<div role="dialog"></div>\n' > "$d/.claude/.review-board-state/signoffs/Evil.svelte"
 err=$(we "$d")
 if printf '%s' "$err" | grep -q 'Evil.svelte'; then
@@ -833,16 +846,26 @@ rm -rf "$d"
 # exact-match one and the probes above cannot see it -- the state-dir guard
 # refuses before the filter matters, and bookkeeping below the denied path
 # would not move the hash even unfiltered (is_source rejects it). Deleting that
-# one line left the whole suite green. Pinned at the unit level instead, on the
-# same nested-`.gitignore` shape, where the arm is the only thing suppressing
-# the entry.
+# one line left the whole suite green. Pinned at the unit level instead.
+#
+# What makes `deny/sub/` survive `:(exclude)deny` at all is TRACKED CONTENT
+# inside the excluded directory, which forces git to descend past the pathspec
+# prune. Two earlier explanations of this fixture were wrong: it is not that git
+# only fails on the entry that IS the excluded path (this entry is strictly
+# below it and survives), and it is not the .gitignore's nesting. The nested
+# `.gitignore` works because committing it PUTS TRACKED CONTENT IN `deny/` --
+# any tracked file does the same, and a top-level rule naming the subdirectory
+# also survives once one exists. With nothing tracked inside, git prunes the
+# directory, the entry never appears, and this probe would pass for the wrong
+# reason. Measured all four ways.
+#
+# Note the live repo reaches only the exact-match arm: its state dir is ignored
+# whole and holds no tracked content. This arm is defensive coverage, not a
+# mirror of a production configuration.
 d=$(new_repo) || exit 1
 mkdir -p "$d/deny/sub" "$d/foo/bar"
-# The nested .gitignore must be TRACKED, and this is the whole fixture. Left
-# untracked, git prunes `deny` wholesale during traversal -- nothing in it
-# matches the pathspec -- the collapsed entry never appears at all, and the arm
-# this probe exists for is never reached, so the probe passes for the wrong
-# reason. Measured both ways before it was written this way round.
+# Committed, not merely written: being TRACKED is what makes it work, and it
+# works as tracked content rather than as an ignore rule (see above).
 printf 'sub/\n' > "$d/deny/.gitignore"
 (cd "$d" && printf 'foo/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
 printf 'x\n' > "$d/foo/bar/x.ts"
@@ -883,6 +906,104 @@ else
   no "a string-prefix match that is not a path prefix is not suppressed" "got [$(imp "$d" . ':(exclude)foo')]"
 fi
 rm -rf "$d"
+
+# The guard's own bounds and blind spots, each of which was a SILENT ALLOW
+# before it carried its own walk. The first version reused `walk_hidden_dir`,
+# which answers "what should I hash" -- so it skipped `is_artifact` names,
+# pruned `*/.git`, stopped at depth 12, and drew its depth and readability
+# refusals from compute_work_hash's bounds loop, the very loop `path_is_denied`
+# had just removed the state dir from. A review round put a `role="dialog"`
+# with no focus trap in each of these and watched the gate report nothing, then
+# watched a real vite build server-render the `dist/` one.
+#
+# `deep` and `unreadable` are REGRESSIONS this body of work introduced and now
+# closes: both drew a named refusal at 0261ac8. The artifact and `.git` shapes
+# never worked, at 0261ac8 either -- they are here because the guard's own
+# refusal text promises they do.
+evil='<div role="dialog" aria-modal="true"><button>x</button></div>'
+for shape in dist build coverage node_modules .svelte-kit .cache .output .turbo .git; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+  mkdir -p "$d/.claude/.review-board-state/$shape"
+  printf '%s\n' "$evil" > "$d/.claude/.review-board-state/$shape/Evil.svelte"
+  err=$(we "$d")
+  if printf '%s' "$err" | grep -q 'Evil.svelte'; then
+    ok "a rendered file under an artifact-named state subdir refuses ($shape)"
+  else
+    no "a rendered file under an artifact-named state subdir refuses ($shape)" "got [$err]"
+  fi
+  rm -rf "$d"
+done
+
+# Depth. The bound is the guard's own `-maxdepth`, so past it `find` simply does
+# not descend -- silently, which is why the refusal has to be derived from a
+# second count rather than from an empty walk.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/a/b/c/d/e/f/g/h/i/j/k/l"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/a/b/c/d/e/f/g/h/i/j/k/l/Evil.svelte"
+err=$(we "$d")
+# Names the directory, not the file: past the bound the gate has not seen the
+# file and must not pretend to. "nests deeper" is the actionable half.
+if printf '%s' "$err" | grep -q 'nests deeper'; then
+  ok "a rendered file below the state dir's depth bound refuses"
+else
+  no "a rendered file below the state dir's depth bound refuses" "got [$err]"
+fi
+rm -rf "$d"
+
+# Readability. `find`'s stderr is swallowed, so an unreadable directory is
+# byte-identical on stdout to an empty one. Mode 111 is the live shape: the
+# directory is still traversable by exact path, so a bundler resolving an import
+# reads the component fine while an unprobed gate enumerates nothing.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+mkdir -p "$d/.claude/.review-board-state/hidden"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/hidden/Evil.svelte"
+chmod 111 "$d/.claude/.review-board-state/hidden"
+err=$(we "$d")
+chmod 755 "$d/.claude/.review-board-state/hidden"
+if printf '%s' "$err" | grep -q 'cannot be read'; then
+  ok "an unreadable state subdir refuses rather than reading as empty"
+else
+  no "an unreadable state subdir refuses rather than reading as empty" "got [$err]"
+fi
+rm -rf "$d"
+
+# Case. `renders()` has always lowercased; `is_source` does not, and the two
+# disagreeing let `Evil.SVELTE` escape this guard while `renders()` would forbid
+# waiving the identical file anywhere else in the tree.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.SVELTE"
+err=$(we "$d")
+if printf '%s' "$err" | grep -q 'Evil.SVELTE'; then
+  ok "an uppercase extension in the state dir does not escape the guard"
+else
+  no "an uppercase extension in the state dir does not escape the guard" "got [$err]"
+fi
+rm -rf "$d"
+
+# The refusal must never hand a person an internal token where a path belongs.
+# The first version printed the walk's own `__WALK_TRUNCATED__` sentinel into
+# the message as though it were a filename, in a fix whose stated rationale is
+# that a named refusal is the actionable one. Checked across every reason the
+# detector can emit, by driving the formatter directly -- provoking all four
+# through fixtures would need a 750-file directory and a newline-named file for
+# no extra discrimination.
+bad=""
+for reason in "source:x/y.svelte" "unreadable:$STATE_DIR_PROBE" "deep:$STATE_DIR_PROBE" "newline:$STATE_DIR_PROBE" "wat:$STATE_DIR_PROBE"; do
+  m=$(cd "$HOOKS_SRC/../.." && bash -c '. .claude/hooks/work-hash.sh; state_dir_refusal "$1" "test"' _ "$reason")
+  case "$m" in
+    *__WALK_*|*__DENIED_*) bad="${bad} ${reason}" ;;
+  esac
+  [ -z "$m" ] && bad="${bad} ${reason}(empty)"
+done
+if [ -z "$bad" ]; then
+  ok "every refusal reason formats to a sentence, never a bare token"
+else
+  no "every refusal reason formats to a sentence, never a bare token" "leaked for:${bad}"
+fi
 
 # The `${#__deny[@]}` guard in `ignored_matching_paths`. Stock macOS /bin/bash
 # (3.2) treats expanding an EMPTY array under `set -u` as an unbound variable
