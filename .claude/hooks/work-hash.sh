@@ -94,6 +94,9 @@ WAIVER_NEVER=(
   '.pcss'
   '.postcss'
   '.sss'
+  # SVG carries `role`, `aria-label` and `<title>`, and was in IS_SOURCE_EXT but
+  # not here, so `assets/icon.svg` waived cleanly under `formatting-only`.
+  '.svg'
   # Build config decides what SSRs and how it hydrates -- this repo has no
   # svelte.config.js, so vite.config.ts is where the sveltekit() plugin lives.
   # `--grounds formatting-only` cleared a rewrite setting `ssr.noExternal` and
@@ -179,8 +182,25 @@ WALK_TRUNCATED_SENTINEL='__WALK_TRUNCATED__'
 # and a record containing an embedded `\n` after that read is unambiguously
 # a path this walk cannot safely emit, not a record-boundary artifact.
 NEWLINE_IN_PATH_SENTINEL='__WALK_NEWLINE__'
+# `find` could not read some part of the tree it was pointed at. Its stderr is
+# swallowed at every call site, so an INCOMPLETE walk is byte-identical on
+# stdout to an empty one -- and no permission probe closes that, which is the
+# lesson that cost this file two rounds. `chmod 000`/`111` are caught by mode
+# bits; a macOS ACL denying `list` is caught by access(2) but not by mode bits;
+# and an ACL denying `readattr` is caught by NEITHER, because `find` then cannot
+# even classify the entry: `-type d` never names the directory, so a
+# per-directory test never runs on it, and `-type f` never descends. Build-proven
+# as a live fail-open -- a component behind `chmod +a "<user> deny readattr"`
+# left the hash unmoved and WAIVER_FORBIDDEN empty while vite compiled it and
+# shipped `aria-modal="true"` with no focus trap into the bundle.
+#
+# So the walk stops inferring absence from a short read and asks `find` whether
+# it finished. That covers every ACL variant, every permission shape, and
+# whatever the next one turns out to be, because it tests the thing that
+# actually matters rather than one mechanism that can cause it.
+WALK_UNREADABLE_SENTINEL='__WALK_UNREADABLE__'
 walk_hidden_dir() {
-  local root_dir="$1" count=0 p
+  local root_dir="$1" count=0 p __ec_file __ec
   # `./` prefix if relative and not already so: a directory literally named
   # `-lab` passed bare to `find` is parsed as an unknown OPTION FLAG
   # (`illegal option -- l`), not a path -- stderr swallowed below the same
@@ -188,11 +208,18 @@ walk_hidden_dir() {
   # dropped out of the walk with no refusal. `${root_dir#/}` unchanged means
   # no leading `/` was stripped, i.e. the path was already relative.
   [ "${root_dir#/}" = "$root_dir" ] && root_dir="./$root_dir"
+  # `find`'s exit status, written to a FILE by the producer: `$?` after
+  # `done < <(...)` reads the WHILE loop's status, not the substituted
+  # command's, and a variable assigned inside a process substitution does not
+  # survive it -- the same trap `add_ignored_tracked` documents one function
+  # down, and the reason it also uses a file.
+  __ec_file=$(mktemp 2>/dev/null) || { printf '%s\n' "$WALK_UNREADABLE_SENTINEL"; return 0; }
   while IFS= read -r -d '' p; do
     [ -z "$p" ] && continue
     case "$p" in
       *$'\n'*)
         printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
+        rm -f "$__ec_file" 2>/dev/null
         return 0
         ;;
     esac
@@ -204,13 +231,20 @@ walk_hidden_dir() {
     # it in the caller; the sentinel is that property travelling as data.
     if [ "$count" -gt "$WALK_HIDDEN_CAP" ]; then
       printf '%s\n' "$WALK_TRUNCATED_SENTINEL"
+      rm -f "$__ec_file" 2>/dev/null
       return 0
     fi
     printf '%s\n' "$p"
-  done < <(find -L "$root_dir" -maxdepth 12 \
+  done < <({ find -L "$root_dir" -maxdepth 12 \
     \( -path '*/.git' -o \( \( -name node_modules -o -name .svelte-kit \) \
          ! -path 'src/*' ! -path 'static/*' ! -path '*/src/*' ! -path '*/static/*' \) \) -prune -o \
-    -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+    -type f -print0 2>/dev/null; printf '%s' "$?" > "$__ec_file"; } | LC_ALL=C sort -z)
+  # Terminal, like the other two: emitted AFTER the paths so a caller that reads
+  # the walk for content still gets everything find managed to see, and the
+  # refusal rides out on the same channel.
+  __ec=$(cat "$__ec_file" 2>/dev/null)
+  rm -f "$__ec_file" 2>/dev/null
+  [ "${__ec:-1}" = "0" ] || printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
 }
 
 # True for a path inside a build artifact directory. A single left-to-right
@@ -390,36 +424,39 @@ path_is_denied() {
 # forbid waiving the identical file anywhere else in the tree.
 STATE_DIR_MAX_DEPTH=12
 state_dir_hides_source() {
-  [ -d "$STATE_DIR" ] || return 0
-  if ! ls -- "$STATE_DIR" >/dev/null 2>&1 ||
-     [ -n "$(find -L "$STATE_DIR" -type d \( ! -perm -u+r -o ! -perm -u+x \) -print -quit 2>/dev/null)" ] ||
-     [ -n "$(find -L "$STATE_DIR" -type f ! -perm -u+r -print -quit 2>/dev/null)" ]; then
-    printf 'unreadable:%s\n' "$STATE_DIR"
+  # `[ -d ]` is a STAT, and an ACL denying `readattr` on the state directory
+  # itself makes every stat-based test answer false -- so a directory that is
+  # right there, holding a component the bundler reads by exact path, reports as
+  # simply absent and this function returns "nothing here". Distinguish the two
+  # by asking the PARENT for its entries: readdir supplies names without
+  # stat'ing them, so a glob names the directory even when nothing can stat it.
+  # Absent for real matches nothing and still returns quietly, which is the arm
+  # that matters -- a false refusal on a fresh checkout is the livelock this
+  # whole task exists to remove.
+  if [ ! -d "$STATE_DIR" ]; then
+    local __e
+    for __e in "$(dirname "$STATE_DIR")"/.* "$(dirname "$STATE_DIR")"/*; do
+      if [ "$__e" = "$STATE_DIR" ]; then
+        printf 'unreadable:%s\n' "$STATE_DIR"
+        return 0
+      fi
+    done
     return 0
   fi
-  # ...and then ask ACCESS, not mode bits, per directory. The three probes above
-  # read `-perm`, which answers a question about the MODE -- and on macOS an ACL
-  # (`chmod +a "<user> deny list" <dir>`, no root required) denies readdir while
-  # the mode still reads `drwxr-xr-x`. Measured: both `-perm` arms empty, `ls` on
-  # the state-dir ROOT succeeds because the ACL is on a child, `find` enumerates
-  # nothing, and a `role="dialog"` with no focus trap sat there through four
-  # `--pass` sign-offs while staying readable by exact path, so a bundler
-  # resolving the import gets the component the gate cannot see.
+  # NO permission probe here, deliberately, and this is the third design. It
+  # went `-perm` (mode bits), then `-perm` plus a per-directory access(2) test,
+  # and each version was defeated by an ACL one verb further out: `deny list`
+  # beat mode bits, `deny readattr` beat access(2) as well -- because `find`
+  # then cannot even classify the entry, so `-type d` never names the directory
+  # for a per-directory test to run on. Chasing mechanisms was the mistake.
   #
-  # `[ -r ] && [ -x ]` is access(2), which honours ACLs. `ls` is NOT a
-  # substitute and was tried first: under that same ACL `ls -- <dir>` exits 0
-  # with empty output, which is the silent-empty failure this whole function
-  # exists to refuse. The ACL'd directory is still visible as an ENTRY in its
-  # parent, so `find` names it even though it cannot descend, which is what
-  # makes a per-directory test possible at all. Costs one test per directory,
-  # which is nothing: this walk has no cap because it reads no contents.
-  local __dir
-  while IFS= read -r -d '' __dir; do
-    if [ ! -r "$__dir" ] || [ ! -x "$__dir" ]; then
-      printf 'unreadable:%s\n' "$__dir"
-      return 0
-    fi
-  done < <(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type d -print0 2>/dev/null)
+  # Asking `find` whether it FINISHED (below, via its exit status) subsumes all
+  # of them: `chmod 000`, `chmod 111`, `chmod 666`, `deny list` and
+  # `deny readattr` all make it exit non-zero. Measured: with the exit-status
+  # check in place, deleting the access(2) loop and both `-perm` arms changed no
+  # probe at all, which is what unpinnable redundancy looks like. One mechanism
+  # that tests the thing that matters beats four that test its causes.
+
   # Two -maxdepth counts rather than -mindepth. The hazard that forced this form
   # on compute_work_hash's bounds loop -- BSD find silently dropping -prune the
   # moment -mindepth appears anywhere in the expression -- cannot bite HERE,
@@ -435,21 +472,33 @@ state_dir_hides_source() {
     printf 'deep:%s\n' "$STATE_DIR"
     return 0
   fi
-  local __p __lower
+  # Collected rather than returned from inside the loop, so `find`'s exit status
+  # is still read on every path. A hit outranks an incomplete read -- naming the
+  # file is strictly more actionable than naming the directory -- but an
+  # incomplete read with NO hit must never be reported as "nothing here", which
+  # is the whole failure this function exists to refuse.
+  local __p __lower __hit="" __ec_file __ec
+  __ec_file=$(mktemp 2>/dev/null) || { printf 'unreadable:%s\n' "$STATE_DIR"; return 0; }
   while IFS= read -r -d '' __p; do
     [ -z "$__p" ] && continue
+    [ -n "$__hit" ] && continue
     # A newline in the name cannot be reported as one line, and reporting the
     # directory instead keeps the refusal true where naming the file would
     # corrupt it -- the same trade the walk sentinels make.
     case "$__p" in
-      *$'\n'*) printf 'newline:%s\n' "$STATE_DIR"; return 0 ;;
+      *$'\n'*) __hit="newline:$STATE_DIR"; continue ;;
     esac
     __lower=$(printf '%s' "$__p" | tr '[:upper:]' '[:lower:]')
-    if is_source "$__lower"; then
-      printf 'source:%s\n' "$__p"
-      return 0
-    fi
-  done < <(find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 2>/dev/null)
+    if is_source "$__lower"; then __hit="source:$__p"; fi
+  done < <({ find -L "$STATE_DIR" -maxdepth "$STATE_DIR_MAX_DEPTH" -type f -print0 2>/dev/null; printf '%s' "$?" > "$__ec_file"; })
+  __ec=$(cat "$__ec_file" 2>/dev/null)
+  rm -f "$__ec_file" 2>/dev/null
+  if [ -n "$__hit" ]; then printf '%s\n' "$__hit"; return 0; fi
+  # Neither mode bits nor access(2) sees an ACL that denies `readattr`: `find`
+  # cannot classify the entry, so `-type d` never names the directory for the
+  # loop above to test and `-type f` never descends. Asking find whether it
+  # finished is the only probe that catches it.
+  [ "${__ec:-1}" = "0" ] || printf 'unreadable:%s\n' "$STATE_DIR"
   return 0
 }
 
@@ -1174,6 +1223,10 @@ compute_work_hash() {
       WORK_ERROR="${__hidden_dir} contains a file whose name has a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
       return 1 ;;
     esac
+    case "$__walk_out" in *"$WALK_UNREADABLE_SENTINEL"*)
+      WORK_ERROR="${__hidden_dir} could not be read all the way down, so this gate cannot tell whether work hides in it. The probes above test permission bits and access, which an ACL denying \`readattr\` defeats -- check for one with \`ls -lde\`, or move that content out of the work tree."
+      return 1 ;;
+    esac
     case "$__walk_out" in *"$WALK_TRUNCATED_SENTINEL"*) __trunc=1 ;; *) __trunc="" ;; esac
     if [ -n "$__trunc" ]; then
       WORK_ERROR="${__hidden_dir} hides more than ${WALK_HIDDEN_CAP} files from this gate, which is more than it will read on every stop. Narrow the ignore rule, or move that content out of the work tree."
@@ -1218,6 +1271,7 @@ compute_work_hash() {
             # four config names. A hidden directory of .ts/.js/.json was invisible.
             if [ -n "$(walk_hidden_dir "$f" | while IFS= read -r __i; do
                  [ "$__i" = "$NEWLINE_IN_PATH_SENTINEL" ] && { echo hit; break; }
+                 [ "$__i" = "$WALK_UNREADABLE_SENTINEL" ] && { echo hit; break; }
                  is_source "$__i" && { echo hit; break; }
                done)" ]; then __external=1; fi
           elif renders "$f"; then
@@ -1259,16 +1313,22 @@ compute_work_hash() {
               if [ "${__names#*"$NEWLINE_IN_PATH_SENTINEL"}" != "$__names" ]; then
                 printf '%s\n' "$NEWLINE_IN_PATH_SENTINEL"
               fi
+              if [ "${__names#*"$WALK_UNREADABLE_SENTINEL"}" != "$__names" ]; then
+                printf '%s\n' "$WALK_UNREADABLE_SENTINEL"
+              fi
               printf '%s\n' "$__names" | while IFS= read -r inner; do
                 [ -z "$inner" ] && continue
                 [ "$inner" = "$WALK_TRUNCATED_SENTINEL" ] && continue
                 [ "$inner" = "$NEWLINE_IN_PATH_SENTINEL" ] && continue
+                [ "$inner" = "$WALK_UNREADABLE_SENTINEL" ] && continue
                 if is_hashable "$inner"; then printf 'externally-hidden:%s\n' "$inner"
                 else printf 'externally-hidden-blob:%s:%s\n' "$inner" "$(shasum -a 256 < "$inner" 2>/dev/null | cut -d' ' -f1)"
                 fi
               done
               printf '%s\n' "$__names" | while IFS= read -r inner; do
-                [ -n "$inner" ] && is_hashable "$inner" && printf '%s\0' "$inner"
+                [ -n "$inner" ] && [ "$inner" != "$WALK_UNREADABLE_SENTINEL" ] \
+                  && [ "$inner" != "$WALK_TRUNCATED_SENTINEL" ] && [ "$inner" != "$NEWLINE_IN_PATH_SENTINEL" ] \
+                  && is_hashable "$inner" && printf '%s\0' "$inner"
               done | xargs -0 cat 2>/dev/null
             elif [ -e "$f" ] && ! is_artifact "$f"; then
               if is_hashable "$f"; then
@@ -1284,6 +1344,10 @@ compute_work_hash() {
   )
   if printf '%s' "$externally_hidden" | grep -qxF "$NEWLINE_IN_PATH_SENTINEL"; then
     WORK_ERROR="an ignored path contains a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
+    return 1
+  fi
+  if printf '%s' "$externally_hidden" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+    WORK_ERROR="an ignored directory could not be read all the way down, so this gate cannot tell whether work hides in it. Check for an ACL denying \`readattr\` with \`ls -lde\`, or move that content out of the work tree."
     return 1
   fi
 
@@ -1518,6 +1582,7 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
             # four config names. A hidden directory of .ts/.js/.json was invisible.
             if [ -n "$(walk_hidden_dir "$f" | while IFS= read -r __i; do
                  [ "$__i" = "$NEWLINE_IN_PATH_SENTINEL" ] && { echo hit; break; }
+                 [ "$__i" = "$WALK_UNREADABLE_SENTINEL" ] && { echo hit; break; }
                  is_source "$__i" && { echo hit; break; }
                done)" ]; then __external=1; fi
           elif renders "$f"; then
@@ -1556,6 +1621,10 @@ $(git -c core.quotePath=false diff --name-only -z --no-renames "$baseline" "$tip
   fi
   if printf '%s' "$hidden" | grep -qxF "$NEWLINE_IN_PATH_SENTINEL"; then
     WORK_ERROR="an ignored path contains a literal newline byte, which this gate cannot safely enumerate as a single path. Rename it, or move that content out of the work tree."
+    return 1
+  fi
+  if printf '%s' "$hidden" | grep -qxF "$WALK_UNREADABLE_SENTINEL"; then
+    WORK_ERROR="an ignored directory could not be read all the way down, so a waiver cannot verify what hides in it. Check for an ACL denying \`readattr\` with \`ls -lde\`, or move that content out of the work tree."
     return 1
   fi
   hidden=$(printf '%s' "$hidden" | grep -vxF "$WALK_TRUNCATED_SENTINEL")

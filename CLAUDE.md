@@ -383,6 +383,15 @@ permanent home for unreviewed components. Markdown under `.claude/agents` and `.
 reviewable work — editing an agent's operating instructions changes behavior, and calling that a
 documentation edit is how you talk yourself out of a review you owe.
 
+The state directory is on that list **conditionally**, for the same reason `docs` and `.vscode`
+came off it. Its own bookkeeping is out of scope, but a file `is_source` recognises there —
+anything that renders, or decides what renders — makes both `compute_work_hash` and
+`waiver_forbidden_paths` refuse by name rather than clear. It is the only directory still on the
+list, so excluding it unconditionally made it the next permanent hiding place: measured, an
+`Evil.svelte` written there stopped moving the work hash and dropped out of `WAIVER_FORBIDDEN`,
+so one board round on a tracked `import` line bought unlimited unreviewed edits to a component
+vite still bundles, SSRs and hydrates.
+
 Record a sign-off once all four have returned PASS, so there's still a durable trail even without a
 hook reading it:
 

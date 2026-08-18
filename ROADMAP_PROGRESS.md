@@ -441,37 +441,44 @@ Held open through the sections above, and fixed on 2026-08-17 as its own scoped 
 - Criterion 1 asked for the prefix test "after `ignored_matching_paths` returns", which read literally means at the three call sites — but criterion 3 asked those call sites to stay unmodified, and both cannot hold at once. The filter went _inside_ the function, which satisfies the intent and criterion 3 literally, gets it right once instead of three times, and cannot be missed by a fourth call site later. The deny set is derived from the `:(exclude)` pathspecs actually passed rather than a second copy of `WORK_DENY`, so it cannot drift; the two `-C` call sites pass no excludes and are unaffected by construction.
 - Criterion 2 asked that a source-extension file written into `.claude/.review-board-state/` leave the hash **unchanged**. That is precisely the fail-open above, so it is not implemented. Bookkeeping written there leaves the hash unchanged — the criterion's actual purpose — and a _source_ file refuses by name. The issue's stated premise, that this defect "fails closed" so the only risk is livelock, is true of the defect and **not** of the fix it prescribes.
 
-**Thirty-five new assertions, and the mutations that redden them.** Units first, because this
-paragraph has now shipped a wrong count three times: the suite prints one line per assertion, and
-a parameterized loop prints one per iteration, so a `for` over nine artifact names is one `ok`
-call site and nine assertions. Measured by running the suite at `0261ac8` and at `HEAD` and
-diffing the rosters: **117 → 152**, so 35 new assertions from 12 `ok` call sites. Every figure
-below is pasted output, not a count carried in prose.
+**Forty-six new assertions, and the mutations that redden them.** Units first, because this
+paragraph shipped a wrong count in four consecutive rounds: the suite prints one line per
+assertion, and a parameterized loop prints one per iteration, so a `for` over nine artifact names
+is one `ok` call site and nine assertions. Counted by running the suite at `0261ac8` and at `HEAD`
+and diffing the rosters — **117 → 163** — rather than by grepping call sites, which is what
+produced two of the four wrong figures. Every row below is pasted output from one sweep, run in an
+isolated copy of the hooks rather than the working tree, after a background sweep writing
+`work-hash.sh` concurrently with a foreground edit destroyed one.
 
-| mutation                                            | result               |
-| --------------------------------------------------- | -------------------- |
-| clean                                               | 152 passed, 0 failed |
-| pre-fix `work-hash.sh` at `0261ac8`                 | 122 / 30             |
-| the first `walk_hidden_dir`-based guard (`c7ac225`) | 128 / 24             |
-| state-dir guard neutered at both entry points       | 130 / 22             |
-| guard's file walk bounded to `-maxdepth 1`          | 142 / 10             |
-| `"$__d"/*` containment arm deleted                  | 151 / 1              |
-| containment reversed                                | 150 / 2              |
-| `${#__deny[@]}` empty-array guard removed           | 151 / 1              |
-| access(2) directory loop deleted                    | 151 / 1              |
-| vite CSS set removed from `IS_SOURCE_EXT`           | 148 / 4              |
-| vite CSS set removed from `WAIVER_NEVER`            | 146 / 6              |
-| formatter fallback echoes its argument              | 151 / 1              |
-| pre-fix plus `.signoff` in `IS_SOURCE_EXT`          | 121 / 18             |
+| mutation                                                         | result   |
+| ---------------------------------------------------------------- | -------- |
+| clean                                                            | 163 / 0  |
+| pre-fix at `0261ac8`                                             | 124 / 39 |
+| the first `walk_hidden_dir`-based guard (`c7ac225`)              | 131 / 32 |
+| the access(2)-based guard (`aeddf2f`)                            | 159 / 4  |
+| state-dir guard neutered at both entry points                    | 136 / 27 |
+| guard file walk bounded to `-maxdepth 1`                         | 151 / 12 |
+| containment arm deleted                                          | 162 / 1  |
+| containment reversed                                             | 161 / 2  |
+| `${#__deny[@]}` empty-array guard removed                        | 162 / 1  |
+| `walk_hidden_dir` stops asking `find` whether it finished        | 162 / 1  |
+| `state_dir_hides_source` stops asking `find` whether it finished | 160 / 3  |
+| root-stat arm reverted to a bare `[ -d ]`                        | 162 / 1  |
+| root-stat arm always refuses (over-refusal)                      | 87 / 76  |
+| vite CSS set removed from `IS_SOURCE_EXT`                        | 159 / 4  |
+| vite CSS set and `.svg` removed from `WAIVER_NEVER`              | 154 / 9  |
+| `state_dir_refusal` newline arm deleted                          | 162 / 1  |
+| formatter fallback echoes its argument                           | 162 / 1  |
+| pre-fix plus `.signoff` in `IS_SOURCE_EXT`                       | 123 / 40 |
 
-**All 35 are reddened by at least one of those**, and that is computed rather than asserted: the
-union of every mutation's failing-assertion names, normalised for the per-run `mktemp` paths two
-pre-existing probes embed in their own names, contains all 35. The previous two versions of this
-sentence claimed coverage that a reviewer then disproved, which is why it is now the output of a
-set operation. The last of the mutations exists solely to falsify the bookkeeping probe, which is
-redundantly guarded — `path_is_denied` drops the path and `is_source` rejects `.signoff`, so
-either alone holds it green — and that is labelled in the file rather than left to look like a
-single-mutation pin.
+**All 46 are reddened by at least one of those**, computed rather than asserted: the union of every
+mutation's failing-assertion names, normalised for the per-run `mktemp` paths two pre-existing
+probes embed in their own names, contains all 46. Earlier versions of this sentence claimed
+coverage a reviewer then disproved, twice, which is why it is now the output of a set operation.
+Two rows exist only to falsify a probe redundancy would otherwise hold green — the `.signoff` row
+for the bookkeeping probe, and the over-refusal row for "a genuinely absent state dir does not
+provoke a refusal", which no other mutation reaches because every other mutation makes the guard
+refuse _less_.
 
 **Four claims this record made confidently and wrongly**, each caught by a reviewer, kept because the pattern is the lesson:
 
@@ -482,7 +489,48 @@ single-mutation pin.
 
 One figure correction, attributed properly: the **CHR-19 issue** (not this note, which quoted no figure) said `grep -n WORK_DENY` returns 12. It returned 21 at `0261ac8` and 28 now.
 
-**Two more fail-opens the third round found, both closed, both build-proven rather than argued.** The readability probes asked `-perm`, which is a question about the MODE — and on macOS an ACL (`chmod +a "<user> deny list" <dir>`, no root) denies readdir while the mode still reads `drwxr-xr-x`. Measured: every `-perm` arm clean, `ls` on the state-dir root succeeding because the ACL sits on a child, `find` enumerating nothing, and a `role="dialog"` with no focus trap surviving four `--pass` sign-offs while staying readable by exact path. The reviewer's suggested remedy — a per-directory `ls` — does not work either, which is worth recording because it would have shipped unverified: under that ACL `ls` exits 0 with empty output. `[ -r ]` and `[ -x ]` are access(2), which honours ACLs, and that is what the guard asks now. Separately, `is_source` carried five of vite's nine CSS extensions and `WAIVER_NEVER` carried one: vite 8.1.5 matches `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and a scratch project using this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `outline: none` on `:focus-visible`, waived cleanly under `formatting-only`. Both lists now carry all nine.
+**The ACL chase, and why the third design is smaller than the first.** Rounds three and four spent
+themselves on one question: how does this gate know a directory it walked was actually readable?
+The answer went through three designs, and each of the first two was defeated by a macOS ACL one
+verb further out — `chmod +a "<user> deny ..."`, no root required.
+
+- `-perm` (mode bits) was beaten by `deny list`, which denies readdir while the mode still reads
+  `drwxr-xr-x`.
+- `-perm` plus a per-directory access(2) test was beaten by `deny readattr`, which denies stat, so
+  `find` cannot classify the entry at all: `-type d` never names the directory for a per-directory
+  test to run on, `-type f` never descends, and both `-maxdepth` counts agree so no depth refusal
+  fires. Two reviewers reached this independently, one demonstrating the whole consequence — gate
+  blocks, four `--pass` sign-offs record, gate allows, the hidden component is then _edited_ with
+  no board, gate still allows — and building the component with this repo's own vite to confirm
+  `aria-modal="true"` with no focus trap reached the bundle.
+
+The third design asks `find` whether it FINISHED, via its exit status, and that subsumes all of
+them: `chmod 000`, `111`, `666`, `deny list` and `deny readattr` all make it exit non-zero. It is
+also _less_ code — with the exit-status check in place, deleting the access(2) loop and both
+`-perm` arms changed no probe at all, which is what unpinnable redundancy looks like, so they came
+out. One mechanism that tests the thing that matters beats four that test its causes. A separate
+arm covers the state directory's own root, where `[ -d ]` is itself a stat and a `readattr` denial
+turned "this directory holds a component" into "there is no state directory"; it asks the parent
+for its entries, since readdir supplies names without stat'ing them, and is paired with a negative
+control because a false refusal on a fresh checkout is the livelock this task exists to remove.
+
+**A refutation this log got wrong, corrected here because it was published as fact.** A reviewer
+proposed a per-directory `ls` as the remedy for the first ACL. This log recorded that it "does not
+work either — under that ACL `ls` exits 0 with empty output". That was false, and measured in the
+wrong shell: `ls` here is an alias for `eza`, and `/bin/ls` — which is what a hook gets — exits 1.
+A second reviewer measured it four ways (`/bin/ls` rc=1, `ls -A` rc=1, `eza` rc=2, python
+`os.listdir` raising) and located the error exactly: `ls` exits 0 with empty output only on the
+_parent_ of the ACL'd directory, which is the preceding sentence in the same comment. Two adjacent
+facts, conflated, and shipped into three files as a reason to reject a remedy that would in fact
+have worked for that ACL. The remedy is still not what shipped — it does not survive `deny
+readattr` either — but it was dismissed on a measurement that does not hold.
+
+Separately, `is_source` carried five of vite's nine CSS extensions and `WAIVER_NEVER` carried one:
+vite 8.1.5 matches `(css|less|sass|scss|styl|stylus|pcss|postcss|sss)`, and a scratch project using
+this repo's own vite compiled a state-dir `.pcss` into shipped CSS carrying `outline: none` on
+`:focus-visible`, waived cleanly under `formatting-only`. Both lists now carry all nine, plus
+`.svg`, which was in `IS_SOURCE_EXT` only and so waivable outside `src/` despite carrying `role`
+and `aria-label`.
 
 **Known gaps, left open deliberately.** The artifact blind spot is tree-wide, not just in the state directory: `tmp/dist/Evil.svelte` in any ignored directory is invisible to both the hash and the waiver, at `0261ac8` and now. The reason for deferring it is **livelock, not performance** — an earlier version of this paragraph said performance, which is the weaker half and invites a future session to "fix" this with a faster walk and reintroduce the livelock. Artifact directories legitimately contain source-extension files, so dropping the `is_artifact` bound from the tree-wide walk turns a real `build/` or `playwright-report/` into a cap refusal telling the user to narrow an ignore rule for a build output: the exact unactionable-refusal class CHR-19 exists to remove. The state directory is the one place "no source, ever" is a defensible invariant, which is why dropping the skip _there_ is right and dropping it everywhere is not. (The performance hazard is real too — that walk once hashed 3000 Istanbul files at 7s — it is just not the deciding reason.) The waiver path also still has no depth or readability probe of its own for non-denied ignored directories, covered only by `review-board-signoff.sh` calling `compute_work_hash` afterwards — the same call-order dependency the state-dir guard declines to rely on.
 

@@ -979,9 +979,15 @@ rm -rf "$d"
 # is on a child, and `find` enumerates nothing. Measured before this was fixed:
 # a `role="dialog"` with no focus trap sat there through four `--pass` sign-offs
 # while staying readable by exact path, so a bundler resolving the import got a
-# component the gate could not see. `ls -- <dir>` is NOT the fix and was tried:
-# under this ACL it exits 0 with empty output. Only access(2) -- `[ -r ]` and
-# `[ -x ]` -- honours the ACL.
+# component the gate could not see. `ls -- <dir>` would in fact have caught THIS
+# ACL: an earlier version of this comment said it exits 0 with empty output,
+# which was measured in a shell where `ls` is an alias for `eza` -- `/bin/ls`,
+# which is what a hook gets, exits 1. Neither `ls` nor access(2) survived
+# contact with the next ACL verb, and both were removed once asking `find`
+# whether it FINISHED turned out to subsume every permission shape at once --
+# see the `readattr` probes below. This probe pins ONE instance of the ACL
+# class and is named for that instance; the mechanism it exercises today is the
+# exit-status check, not a permission test.
 #
 # Skips honestly where `chmod +a` does not exist rather than passing silently:
 # this is a macOS-specific mechanism, and a probe that quietly no-ops elsewhere
@@ -995,12 +1001,12 @@ if chmod +a "$(id -un) deny list" "$d/.claude/.review-board-state/acl" 2>/dev/nu
   # Strip the ACL BEFORE rm -rf, or the teardown wedges on the same denial.
   chmod -N "$d/.claude/.review-board-state/acl" 2>/dev/null
   if printf '%s' "$err" | grep -q 'cannot be read'; then
-    ok "an ACL-denied state subdir refuses rather than reading as empty"
+    ok "a list-denied ACL on a state subdir refuses rather than reading as empty"
   else
-    no "an ACL-denied state subdir refuses rather than reading as empty" "got [$err]"
+    no "a list-denied ACL on a state subdir refuses rather than reading as empty" "got [$err]"
   fi
 else
-  ok "an ACL-denied state subdir refuses rather than reading as empty (skipped: no chmod +a here)"
+  ok "a list-denied ACL on a state subdir refuses rather than reading as empty (skipped: no chmod +a here)"
 fi
 rm -rf "$d"
 
@@ -1010,7 +1016,7 @@ rm -rf "$d"
 # project using this repo's own vite compiled a state-dir `.pcss` into shipped
 # CSS carrying `outline: none` on `:focus-visible`, and
 # `--grounds formatting-only` recorded cleanly over it.
-for ext in pcss postcss sss stylus scss less; do
+for ext in pcss postcss sss stylus scss less sass styl; do
   d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
   (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
   printf ':root{--x:1}.focus-invisible:focus-visible{outline:none}\n' \
@@ -1026,7 +1032,7 @@ done
 
 # The same extensions must also be unwaivable tree-wide: WAIVER_NEVER carried
 # only `.css`, so `assets/theme.pcss` outside `src/` waived cleanly anywhere.
-for ext in pcss postcss sss stylus scss less; do
+for ext in pcss postcss sss stylus scss less sass styl; do
   d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
   mkdir -p "$d/assets"
   printf '.focus-invisible:focus-visible{outline:none}\n' > "$d/assets/theme.$ext"
@@ -1037,6 +1043,19 @@ for ext in pcss postcss sss stylus scss less; do
   fi
   rm -rf "$d"
 done
+
+# SVG carries `role`, `aria-label` and `<title>`, so it renders in the sense
+# WAIVER_NEVER means -- but it was in IS_SOURCE_EXT only, so `assets/icon.svg`
+# outside `src/` waived cleanly under `formatting-only`.
+d=$(new_repo) || exit 1
+mkdir -p "$d/assets"
+printf '<svg role="img" aria-label="unreviewed"><title>x</title></svg>\n' > "$d/assets/icon.svg"
+if signoff "$d" --waive --grounds formatting-only --reason r >/dev/null 2>&1; then
+  no "an svg outside src/ is not waivable" "waiver was accepted"
+else
+  ok "an svg outside src/ is not waivable"
+fi
+rm -rf "$d"
 
 # Case. `renders()` has always lowercased; `is_source` does not, and the two
 # disagreeing let `Evil.SVELTE` escape this guard while `renders()` would forbid
@@ -1049,6 +1068,113 @@ if printf '%s' "$err" | grep -q 'Evil.SVELTE'; then
   ok "an uppercase extension in the state dir does not escape the guard"
 else
   no "an uppercase extension in the state dir does not escape the guard" "got [$err]"
+fi
+rm -rf "$d"
+
+# An ACL denying `readattr` defeats every probe that asks about permission,
+# because `find` cannot classify the entry at all: `-type d` never names the
+# directory, so a per-directory test never runs on it, and `-type f` never
+# descends. Mode bits read `drwxr-xr-x`, access(2) answers true for both, and the
+# depth counters come back equal. Build-proven as a live fail-open before this
+# was closed -- vite compiled a component behind such an ACL and shipped
+# `aria-modal="true"` with no focus trap into the bundle, while the hash stayed
+# put and WAIVER_FORBIDDEN stayed empty. The only probe that catches it is
+# asking `find` whether it finished.
+#
+# Driven at BOTH scopes because they are different walks: the state dir goes
+# through `state_dir_hides_source`, and a plain ignored directory goes through
+# `walk_hidden_dir`, where this was a pre-existing hole rather than one this
+# body of work introduced.
+for scope in state-dir tree-wide; do
+  d=$(new_repo) || { no "setup" "could not build a test repo"; break; }
+  if [ "$scope" = state-dir ]; then
+    (cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    target="$d/.claude/.review-board-state/parts"
+  else
+    (cd "$d" && printf 'tmp/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+    target="$d/tmp/parts"
+  fi
+  mkdir -p "$target"
+  printf '%s\n' "$evil" > "$target/Evil.svelte"
+  if chmod +a "$(id -un) deny readattr" "$target" 2>/dev/null; then
+    err=$(we "$d")
+    # Before rm -rf, or the teardown wedges on the same denial.
+    chmod -N "$target" 2>/dev/null
+    # Any refusal naming the directory is correct here; the file cannot be named
+    # because the gate never saw it, which is the honest thing to report.
+    if [ -n "$err" ]; then
+      ok "a readattr-denied directory refuses rather than reading as empty ($scope)"
+    else
+      no "a readattr-denied directory refuses rather than reading as empty ($scope)" "no refusal; got []"
+    fi
+  else
+    ok "a readattr-denied directory refuses rather than reading as empty ($scope, skipped: no chmod +a here)"
+  fi
+  rm -rf "$d"
+done
+
+# The same denial on the state directory ITSELF is a different arm again:
+# `[ -d "$STATE_DIR" ]` is a stat, so a readattr denial there turned "this
+# directory holds a component" into "there is no state directory" and returned
+# quietly. Answered now by asking the PARENT for its entries, since readdir
+# supplies names without stat'ing them.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+if chmod +a "$(id -un) deny readattr" "$d/.claude/.review-board-state" 2>/dev/null; then
+  err=$(we "$d")
+  chmod -N "$d/.claude/.review-board-state" 2>/dev/null
+  if printf '%s' "$err" | grep -q 'cannot be read'; then
+    ok "a readattr-denied state dir ROOT refuses rather than reading as absent"
+  else
+    no "a readattr-denied state dir ROOT refuses rather than reading as absent" "got [$err]"
+  fi
+else
+  ok "a readattr-denied state dir ROOT refuses rather than reading as absent (skipped: no chmod +a here)"
+fi
+rm -rf "$d"
+
+# The negative control for that arm, and the more important half: a genuinely
+# absent state directory must still return quietly. Getting this wrong makes
+# every fresh checkout refuse, which is the livelock CHR-19 exists to remove.
+d=$(new_repo) || exit 1
+rm -rf "$d/.claude/.review-board-state"
+res=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; state_dir_hides_source')
+if [ -z "$res" ]; then
+  ok "a genuinely absent state dir does not provoke a refusal"
+else
+  no "a genuinely absent state dir does not provoke a refusal" "got [$res]"
+fi
+# The refusal must also still fire for a state dir that exists but holds source,
+# from the SAME fixture shape -- otherwise the negative control above is
+# satisfiable by a guard that never refuses at all.
+printf '%s\n' "$evil" > "$d/Evil.svelte" 2>/dev/null
+mkdir -p "$d/.claude/.review-board-state"
+printf '%s\n' "$evil" > "$d/.claude/.review-board-state/Evil.svelte"
+res=$(cd "$d" && CLAUDE_PROJECT_DIR="$d" bash -c '. .claude/hooks/work-hash.sh; state_dir_hides_source')
+case "$res" in
+  source:*Evil.svelte) ok "the same fixture still refuses once the state dir exists" ;;
+  *) no "the same fixture still refuses once the state dir exists" "got [$res]" ;;
+esac
+rm -rf "$d"
+
+# The `newline` arm of state_dir_refusal, which a reviewer showed IS producible
+# by the detector -- so the formatter probe's claim that only `*)` is
+# unreachable was wrong, and deleting this arm left the whole suite green.
+d=$(new_repo) || exit 1
+(cd "$d" && printf '.claude/.review-board-state/\n' > .gitignore && git add -A && git commit -qm ign) >/dev/null 2>&1
+nl=$(printf 'two\nlines.svelte')
+if printf '%s\n' "$evil" > "$d/.claude/.review-board-state/$nl" 2>/dev/null; then
+  err=$(we "$d")
+  errw=$(wf "$d")
+  if printf '%s' "$err" | grep -q 'literal newline byte' && printf '%s' "$errw" | grep -q 'literal newline byte'; then
+    ok "a newline-named file in the state dir refuses with the newline sentence"
+  else
+    no "a newline-named file in the state dir refuses with the newline sentence" "hash=[$err] waiver=[$errw]"
+  fi
+  rm -f "$d/.claude/.review-board-state/$nl"
+else
+  no "a newline-named file in the state dir refuses with the newline sentence" "could not create the fixture"
 fi
 rm -rf "$d"
 
@@ -1072,8 +1198,11 @@ rm -rf "$d"
 # real path, and a file genuinely named `__WALK_TRUNCATED__.svelte` should be
 # named. Driving the formatter directly is deliberate -- `deep` and `unreadable`
 # have their own fixtures above, and the remaining arms are reachable only from
-# states the detector cannot currently produce. (An earlier version of this
-# comment justified that with "a 750-file directory", which is
+# the `*)` state, which the detector cannot produce. An earlier version of this
+# comment said that of `newline` too, which was wrong -- a newline-named file in
+# the state dir reaches it, and there is now a fixture three probes up that
+# proves it at both entry points. That comment also justified the choice with
+# "a 750-file directory", which is
 # `WALK_HIDDEN_CAP`, belonging to `walk_hidden_dir`; this walk deliberately has
 # no cap.)
 fmt() { (cd "$HOOKS_SRC/../.." && bash -c '. .claude/hooks/work-hash.sh; state_dir_refusal "$1" "test"' _ "$1"); }
