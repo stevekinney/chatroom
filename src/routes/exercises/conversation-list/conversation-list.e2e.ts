@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { gotoHydrated } from '../hydration';
-
-test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
+import { pressNextTabStop } from '../keyboard';
 
 test('switching conversations swaps the header and the rendered transcript', async ({ page }) => {
 	await gotoHydrated(page, '/exercises/conversation-list');
@@ -81,7 +80,10 @@ test('unread count and participant names derive from namespaced conversation met
 	await expect(participants).toHaveAttribute('title', 'Ali Chen, Jordan Reyes');
 });
 
-test('aria-current, keyboard selection, and focus survive the Chat remount', async ({ page }) => {
+test('aria-current, keyboard selection, and focus survive the Chat remount', async ({
+	page,
+	browserName
+}) => {
 	await gotoHydrated(page, '/exercises/conversation-list');
 
 	const launchButton = page.getByRole('button', { name: 'Launch support' });
@@ -98,9 +100,9 @@ test('aria-current, keyboard selection, and focus survive the Chat remount', asy
 	// billing, launch — the component adds no roving-tabindex of its own.
 	await onboardingButton.focus();
 	await expect(onboardingButton).toBeFocused();
-	await page.keyboard.press('Tab');
+	await pressNextTabStop(page, browserName);
 	await expect(billingButton).toBeFocused();
-	await page.keyboard.press('Tab');
+	await pressNextTabStop(page, browserName);
 	await expect(launchButton).toBeFocused();
 
 	// Enter activates the focused item, same as a click.
@@ -158,7 +160,17 @@ test('empty state renders the default text and an emptyText override', async ({ 
 	await expect(customTextList.getByRole('status')).toHaveText('No saved conversations yet');
 });
 
-test('ChatConversationHeader renders its built-in export actions by default', async ({ page }) => {
+test('ChatConversationHeader renders its built-in export actions by default', async ({
+	context,
+	page,
+	browserName
+}) => {
+	test.skip(
+		browserName !== 'chromium',
+		'Only Chromium maps both clipboard-read and clipboard-write permissions'
+	);
+
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 	await gotoHydrated(page, '/exercises/conversation-list');
 
 	const header = page.getByTestId('header-default-export');

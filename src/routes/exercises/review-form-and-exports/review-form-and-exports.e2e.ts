@@ -12,8 +12,6 @@ import type { Locator, Page } from '@playwright/test';
 // behavior is WRONG but real it is pinned as such, with a comment saying so,
 // rather than softened into something that passes.
 
-test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
-
 const ROUTE = '/exercises/review-form-and-exports';
 
 // The five hidden inputs, in DOM order. `name` is a PREFIX: the component

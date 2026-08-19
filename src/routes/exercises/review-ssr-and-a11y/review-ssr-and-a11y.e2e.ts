@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { gotoHydrated } from '../hydration';
+import { pressNextTabStop } from '../keyboard';
 import type { Page } from '@playwright/test';
 
 // What the server renders, what hydration adds, and how the composed
@@ -116,7 +117,7 @@ async function tabToEditableSurface(page: Page, browserName: string): Promise<vo
 	for (let press = 0; press < 12; press += 1) {
 		const active = await activeDescriptor(page);
 		if (active.role === 'textbox' && active.label === 'Markdown editor') return;
-		await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
+		await pressNextTabStop(page, browserName);
 	}
 	throw new Error(
 		'Tabbed 12 times without reaching the editable surface (role=textbox, label="Markdown editor")'
