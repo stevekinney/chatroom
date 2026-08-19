@@ -8,7 +8,9 @@ test('utility functions render correctly against the seeded conversation', async
 	await expect(rows).toHaveCount(24);
 
 	const userRow = rows.first();
-	await expect(userRow.getByTestId('utilities-role-label')).toHaveText('You');
+	await expect(userRow.getByTestId('utilities-role-label')).toHaveText(
+		'DELIBERATE CI-FAILURE-PATH PROOF — CHR-18'
+	);
 	await expect(userRow.getByTestId('utilities-format-as-markdown')).toHaveText(
 		'What is the weather in **Portland**?'
 	);
