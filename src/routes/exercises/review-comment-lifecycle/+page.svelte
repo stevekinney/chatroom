@@ -380,7 +380,16 @@
 <div style="max-width: 76rem; margin: 0 auto; padding: 1rem; display: grid; gap: 1.5rem;">
 	<section style="display: grid; gap: 0.5rem;">
 		<h2 style="margin: 0; font-size: 1rem;">Comment lifecycle</h2>
-		<div style="height: 30rem;">
+		<!--
+			`overflow-y: auto`, not the bare fixed height this used to be: the editor's
+			real content (sidebar included) runs taller than 30rem, and with the
+			default `overflow: visible` the excess painted over the `Observed state`
+			heading below instead of scrolling — so a real mouse user could not
+			reliably click the sidebar's longest-quote row in ANY browser, not just
+			CI. Containing the overflow here removes the interception at its source,
+			rather than asking the spec to route around it.
+		-->
+		<div style="height: 30rem; overflow-y: auto;">
 			<ReviewEditor
 				id="lifecycle-editor"
 				bind:value
@@ -447,10 +456,12 @@
 
 	<!--
 		Appended below `Observed state` on purpose, never above or between it and
-		the editor. The sidebar renders BELOW the editor and overflows this route's
-		fixed 30rem wrapper, so the `Observed state` heading paints over the last
-		sidebar row — which is why the spec clicks sidebar rows at an offset. Moving
-		anything up would change which element is on top and invalidate that offset.
+		the editor. The editor's own wrapper now scrolls (`overflow-y: auto` above)
+		instead of letting its content spill past the fixed 30rem height, so this
+		section no longer paints over any sidebar row. Keeping this section last
+		is no longer load-bearing for that reason, but the order is still
+		deliberate: `Observed state` reads naturally right after the editor it
+		describes, and `Deferred application` is a secondary, less-used control.
 	-->
 	<section style="display: grid; gap: 0.5rem;">
 		<h2 style="margin: 0; font-size: 1rem;">Deferred application</h2>
