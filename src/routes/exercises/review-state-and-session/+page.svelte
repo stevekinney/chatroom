@@ -3,6 +3,7 @@
 		ReviewEditor,
 		createReviewEditorState,
 		toPersistedThreads,
+		toRuntimeThreads,
 		type PersistedThread,
 		type ReviewState,
 		type Thread
@@ -291,11 +292,10 @@ The first release includes a dashboard, export actions, and inline review.`;
 	// -------------------------------------------------------------------------
 	// A second editor seeded with PersistedThread[] — anchors with no from/to.
 	//
-	// The cast is deliberate: `threads` is typed `Thread[]`, there is no
-	// exported `fromPersistedThreads`, and `fromPersistedDraftComment` (the
-	// session module's equivalent) only covers DRAFT comments. A consumer
-	// restoring threads from storage has nothing to call, so casting is what
-	// they will actually reach for.
+	// `toRuntimeThreads` is the exported converter for exactly this: it seeds
+	// the missing `from`/`to` to the neutral 0/0 sentinel, and the anchor
+	// plugin re-anchors each thread by quote against the live document on
+	// mount, writing the real positions back through the two-way binding.
 	// -------------------------------------------------------------------------
 	//
 	// Two threads, because the recovered range depends on where the quote sits:
@@ -344,7 +344,7 @@ The first release includes a dashboard, export actions, and inline review.`;
 		];
 	}
 
-	let persistedSeededThreads = $state<Thread[]>(persistedFixture() as unknown as Thread[]);
+	let persistedSeededThreads = $state<Thread[]>(toRuntimeThreads(persistedFixture()));
 	const persistedSeededAnchor = $derived(persistedSeededThreads[0]?.anchor);
 	// `to - from` versus the quote's own length: the two agree for a quote that
 	// sits inside a paragraph and disagree by one for a quote that ends at a

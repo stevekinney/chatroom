@@ -7,7 +7,7 @@
 		cancelStreamingMessage,
 		Chat,
 		clearMessageDeliveryStatus,
-		createConversation,
+		createConversationHistory,
 		finalizeStreamingMessage,
 		markMessageDeliveryFailed,
 		updateStreamingMessage,
@@ -36,7 +36,7 @@
 		conversation: ConversationHistory;
 		retryTargetId: string;
 	} {
-		let conversation = createConversation({ id });
+		let conversation = createConversationHistory({ id });
 		conversation = appendUserMessage(conversation, "What's the weather like today?");
 		conversation = appendAssistantMessage(conversation, "It's sunny and 72 degrees.");
 		conversation = appendUserMessage(conversation, 'Summarize the quarterly report.');

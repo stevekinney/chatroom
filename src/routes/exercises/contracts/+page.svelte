@@ -3,7 +3,7 @@
 		appendAssistantMessage,
 		appendUserMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		CURRENT_SCHEMA_VERSION,
 		type ConversationHistory
 	} from '@lostgradient/chat';
@@ -22,7 +22,7 @@
 	//    small card." Reproduce the trap and the three documented escapes.
 
 	function buildConversation(id: string): ConversationHistory {
-		let conversation = createConversation({ id });
+		let conversation = createConversationHistory({ id });
 		conversation = appendUserMessage(conversation, 'Does this conversation render?');
 		conversation = appendAssistantMessage(conversation, 'Yes — this is a seeded reply.');
 		return conversation;

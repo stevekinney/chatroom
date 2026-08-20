@@ -3,7 +3,7 @@
 		appendAssistantMessage,
 		appendUserMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		type ConversationHistory,
 		type Message
 	} from '@lostgradient/chat';
@@ -49,7 +49,7 @@
 	const SEED_BODIES = ['Alpha row', 'Bravo row', 'Charlie row', 'Delta row', 'Echo row'];
 
 	function seedConversation(): ConversationHistory {
-		let history = createConversation({ id: 'row-reconciliation' });
+		let history = createConversationHistory({ id: 'row-reconciliation' });
 		for (const [index, body] of SEED_BODIES.entries()) {
 			history =
 				index % 2 === 0 ? appendUserMessage(history, body) : appendAssistantMessage(history, body);

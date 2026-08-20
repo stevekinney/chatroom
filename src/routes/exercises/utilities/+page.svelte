@@ -10,7 +10,7 @@
 		appendAssistantMessage,
 		appendMessages,
 		appendUserMessage,
-		createConversation,
+		createConversationHistory,
 		formatMessageAsMarkdown,
 		getMessageRoleLabel,
 		getMessageText,
@@ -31,7 +31,7 @@
 	// on a transcript that already fits).
 	// -------------------------------------------------------------------------
 	function buildSeededConversation(): ConversationHistory {
-		let history = createConversation({ id: 'utilities-demo' });
+		let history = createConversationHistory({ id: 'utilities-demo' });
 		history = appendUserMessage(history, 'What is the weather in **Portland**?');
 		history = appendAssistantMessage(
 			history,

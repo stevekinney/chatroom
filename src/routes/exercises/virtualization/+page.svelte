@@ -3,7 +3,7 @@
 		Chat,
 		appendMessages,
 		appendStreamingMessage,
-		createConversation,
+		createConversationHistory,
 		finalizeStreamingMessage,
 		prependMessages,
 		updateStreamingMessage,
@@ -39,7 +39,7 @@
 						: `Message ${index}`
 			});
 		}
-		return appendMessages(createConversation({ id: 'virtualization-demo' }), ...seedInputs);
+		return appendMessages(createConversationHistory({ id: 'virtualization-demo' }), ...seedInputs);
 	}
 
 	// Plain `let`: only read via `chat?.method()` calls, never reactively.

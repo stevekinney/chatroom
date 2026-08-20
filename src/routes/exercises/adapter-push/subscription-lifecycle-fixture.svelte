@@ -2,7 +2,7 @@
 	import {
 		appendMessages,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		type ChatAdapter,
 		type ChatPushHandlers,
 		type ConversationHistory
@@ -28,7 +28,7 @@
 	let unsubscribeCountB = $state(0);
 
 	let conversation = $state<ConversationHistory>(
-		createConversation({ id: 'adapter-push-lifecycle-demo' })
+		createConversationHistory({ id: 'adapter-push-lifecycle-demo' })
 	);
 
 	let handlersA: ChatPushHandlers | undefined;

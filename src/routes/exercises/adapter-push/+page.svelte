@@ -3,7 +3,7 @@
 		appendMessages,
 		appendStreamingMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		finalizeStreamingMessage,
 		updateStreamingMessage,
 		type ChatAdapter,
@@ -38,7 +38,9 @@
 	const DIRECT_READ_RECEIPT_READER = 'Priya';
 	const TOKEN_DELAY_MS = 15;
 
-	let conversation = $state<ConversationHistory>(createConversation({ id: 'adapter-push-demo' }));
+	let conversation = $state<ConversationHistory>(
+		createConversationHistory({ id: 'adapter-push-demo' })
+	);
 	let streaming = $state(false);
 	let error = $state<string | null>(null);
 	let eventLog = $state<string[]>([]);
@@ -76,9 +78,8 @@
 	// own effect is still running, which throws `effect_update_depth_exceeded`
 	// (reproduced: typing into the composer alone was enough to trigger it,
 	// since Chat's other effects were still settling from the same flush).
-	// Upstream friction: `ChatAdapter.subscribe`'s docs don't call out that
-	// it runs inside an `$effect`, so a consumer's straightforward "log what
-	// subscribe received" has to know to defer.
+	// `ChatAdapter.subscribe`'s own docs call out exactly this and recommend
+	// the same `queueMicrotask` deferral used here.
 	function log(entry: string): void {
 		queueMicrotask(() => {
 			eventLog = [...eventLog, entry];

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import {
 		Chat,
-		createConversation,
+		createConversationHistory,
 		type ChatAdapter,
 		type ConversationHistory
 	} from '@lostgradient/chat';
@@ -22,7 +22,7 @@
 	let subscribeLog = $state<string[]>([]);
 
 	let conversation = $state<ConversationHistory>(
-		createConversation({ id: 'adapter-push-hazard-demo' })
+		createConversationHistory({ id: 'adapter-push-hazard-demo' })
 	);
 
 	const adapter: ChatAdapter = {

@@ -4,7 +4,7 @@
 		appendToolResult,
 		appendUserMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
 		type ChatAnnounceLevel,
@@ -34,7 +34,7 @@
 		toolName: string,
 		message: string
 	): ConversationHistory {
-		let conversation = createConversation({ id });
+		let conversation = createConversationHistory({ id });
 		conversation = appendUserMessage(conversation, `Please run ${toolName}.`);
 		conversation = appendToolCall(conversation, {
 			id: toolCallId,
@@ -51,7 +51,7 @@
 	}
 
 	function seedWithTwoPendingApprovals(id: string): ConversationHistory {
-		let conversation = createConversation({ id });
+		let conversation = createConversationHistory({ id });
 		conversation = appendUserMessage(
 			conversation,
 			'Please send the digest and refund the invoice.'
