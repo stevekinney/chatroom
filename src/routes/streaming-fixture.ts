@@ -30,7 +30,7 @@
  * becomes a causal one.
  *
  * WHY `playwright.config.ts` OWNS THE PROCESS. `page.svelte.e2e.ts` runs in
- * three browser projects, which Playwright spreads across parallel workers. A
+ * three browser engines, including Playwright's bounded WebKit project shards. A
  * server started from the spec would be started once per worker and every copy
  * after the first would fail to bind. It runs as a `webServer` entry instead —
  * one process for the whole run — and every piece of per-test state below is

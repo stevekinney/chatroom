@@ -19,37 +19,33 @@ import { defineConfig } from '@playwright/test';
 // one rather than intersecting with it, so a bare directory glob here would pull
 // in non-spec files and miss specs.
 //
-// DELIBERATELY ABSENT, and not an oversight: `conversation-list.e2e.ts` and
-// `utilities.e2e.ts` are focus/a11y specs — the former has the cleanest Tab-order
-// walk in the suite — but both open with
-// `test.use({ permissions: ['clipboard-read', 'clipboard-write'] })`. Firefox
-// maps NEITHER clipboard permission and WebKit maps `clipboard-read` but not
-// `clipboard-write`, and an unmapped name throws `Unknown permission` when the
-// browser context is created, so every test in those files would error before
-// its first assertion. Admitting them needs a spec change (splitting the
-// clipboard tests out, or making the grant conditional on `browserName`), which
-// does not belong in a config change. `review-form-and-exports.e2e.ts` carries
-// the same `test.use` line but is out of both categories anyway.
-const CROSS_ENGINE = [
-	// Focus, keyboard, and live regions.
-	'**/review-ssr-and-a11y.e2e.ts',
-	'**/review-comment-creation.e2e.ts',
-	'**/review-views.e2e.ts',
-	'**/review-modes.e2e.ts',
-	'**/review-comment-lifecycle.e2e.ts',
-	'**/review-imperative.e2e.ts',
-	'**/diff-viewer.e2e.ts',
-	'**/markdown-editor.e2e.ts',
-	'**/composer-popover.e2e.ts',
-	// Streaming, aborts, and out-of-order delivery.
-	'**/page.svelte.e2e.ts',
-	'**/message-lifecycle.e2e.ts',
-	'**/interleaving.e2e.ts',
-	'**/adapter-push.e2e.ts',
-	'**/assistant-metadata.e2e.ts',
-	'**/virtualization.e2e.ts',
-	'**/row-reconciliation.e2e.ts'
-];
+// Clipboard-only cases inside `conversation-list.e2e.ts` and `utilities.e2e.ts`
+// create their own permission-bearing contexts and skip outside Chromium.
+// Firefox maps neither clipboard permission and WebKit maps `clipboard-read`
+// but not `clipboard-write`; keeping those grants out of the default fixture
+// lets every engine run the remaining focus and accessibility coverage.
+const CROSS_ENGINE_SHARDS = [
+	[
+		'**/adapter-push.e2e.ts',
+		'**/assistant-metadata.e2e.ts',
+		'**/composer-popover.e2e.ts',
+		'**/conversation-list.e2e.ts',
+		'**/diff-viewer.e2e.ts',
+		'**/interleaving.e2e.ts'
+	],
+	['**/markdown-editor.e2e.ts', '**/message-lifecycle.e2e.ts', '**/review-comment-creation.e2e.ts'],
+	['**/review-comment-lifecycle.e2e.ts', '**/review-imperative.e2e.ts'],
+	['**/review-modes.e2e.ts', '**/review-ssr-and-a11y.e2e.ts'],
+	[
+		'**/review-views.e2e.ts',
+		'**/row-reconciliation.e2e.ts',
+		'**/utilities.e2e.ts',
+		'**/virtualization.e2e.ts',
+		'**/page.svelte.e2e.ts'
+	]
+] as const;
+
+const CROSS_ENGINE = CROSS_ENGINE_SHARDS.flat();
 
 export default defineConfig({
 	// The complete suite starts three application processes and runs Chromium,
@@ -79,11 +75,10 @@ export default defineConfig({
 		screenshot: 'only-on-failure',
 		video: 'retain-on-failure'
 	},
-	// `retries` stays at 0 deliberately. There is no CI in this repo, so the usual
-	// `process.env.CI ? 2 : 0` would never fire — and a retry that turns a real
-	// intermittent failure green is the same mistake as a bumped timeout, which
-	// `CLAUDE.md` treats as blocking. `retain-on-failure` already produces the
-	// artifact HS-4 asked for without one.
+	// `retries` stays at 0 deliberately in CI as well as locally. A retry that
+	// turns a real intermittent failure green is the same mistake as a bumped
+	// timeout, which `CLAUDE.md` treats as blocking. `retain-on-failure` produces
+	// the artifact trail needed to diagnose the first failure without masking it.
 	projects: [
 		// LOAD-BEARING, and the least obvious line in this file. Declaring any
 		// `projects` array REPLACES Playwright's implicit root project. Without this
@@ -98,7 +93,15 @@ export default defineConfig({
 		// it byte-for-byte identical means the only thing this change introduces is
 		// the two new engines.
 		{ name: 'chromium', use: { browserName: 'chromium' } },
-		{ name: 'webkit', use: { browserName: 'webkit' }, testMatch: CROSS_ENGINE },
+		// A long-lived WebKit process stops accepting navigation after its 64th
+		// fresh context on macOS. Each project owns a fresh worker/browser process,
+		// so these five exhaustive, non-overlapping shards keep the largest one at
+		// 62 tests without adding retries, parallel contention, or a larger timeout.
+		...CROSS_ENGINE_SHARDS.map((testMatch, index) => ({
+			name: `webkit-${index + 1}`,
+			use: { browserName: 'webkit' as const },
+			testMatch
+		})),
 		{ name: 'firefox', use: { browserName: 'firefox' }, testMatch: CROSS_ENGINE }
 	],
 	webServer: [

@@ -298,11 +298,11 @@ Acceptance criteria, met:
 
 #### HS-3: Playwright runs Chromium only, despite "confirmed in a real browser" being this project's standard of proof — done
 
-`playwright.config.ts`'s `projects` array now runs `chromium` on the full suite plus `webkit` and `firefox` gated to `CROSS_ENGINE` (the focus/a11y and streaming specs), replacing Playwright's implicit single-engine root project. This session's own full-suite runs exercised all three (879 total tests across engines; see `ROADMAP_PROGRESS.md`).
+`playwright.config.ts`'s `projects` array now runs `chromium` on the full suite, five bounded `webkit-*` shards, and `firefox` gated to `CROSS_ENGINE` (the focus/a11y and streaming specs), replacing Playwright's implicit single-engine root project. The WebKit shards are exhaustive and non-overlapping; each owns a fresh browser process and stays below the engine's 64-context lifetime limit on macOS. This session's own full-suite runs exercised all three engines (879 total tests across engines; see `ROADMAP_PROGRESS.md`).
 
 Acceptance criteria, met:
 
-- `webkit` and `firefox` are in a `projects` array in `playwright.config.ts`, gated to the focus/a11y and streaming specs.
+- Five `webkit-*` projects and `firefox` are in the `projects` array in `playwright.config.ts`, gated to the focus/a11y and streaming specs. Run every WebKit shard with `bunx playwright test --project='webkit-*'`.
 - Doc language elsewhere in this file names the engine a finding was confirmed in, rather than saying "a real browser" unqualified.
 
 #### HS-4: no CI trace/screenshot/video capture is configured — done

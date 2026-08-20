@@ -6,17 +6,31 @@ import { toolbox } from '$lib/toolbox';
 import type { SignedPendingToolApproval } from 'armorer';
 import type { RequestHandler } from './$types';
 
+const actionSchema = z.object({
+	type: z.enum(['approval', 'input']),
+	message: z.string().optional(),
+	schema: z.unknown().optional()
+});
+
+const policyPauseTierSchema = z.enum(['capability', 'registry', 'tool']);
+
 const approvalSchema = z.object({
 	callId: z.string(),
 	toolName: z.string(),
 	arguments: z.unknown(),
-	action: z.object({
-		type: z.enum(['approval', 'input']),
-		message: z.string().optional(),
-		schema: z.unknown().optional()
-	}),
+	action: actionSchema,
 	reason: z.string().optional(),
 	metadata: z.unknown().optional(),
+	policyPauseTier: policyPauseTierSchema.optional(),
+	satisfiedPolicyPauses: z
+		.array(
+			z.object({
+				action: actionSchema,
+				reason: z.string().optional(),
+				tier: policyPauseTierSchema.optional()
+			})
+		)
+		.optional(),
 	approvalToken: z.string()
 });
 

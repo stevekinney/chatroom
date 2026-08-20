@@ -21,11 +21,12 @@ import type { Page } from '@playwright/test';
  * firefox  Tab      A -> BUTTON -> INPUT -> BUTTON -> TEXTAREA -> DIV -> BUTTON
  * ```
  *
- * So WebKit's `Alt+Tab` yields the same order the other two give for `Tab`.
- * Translating the keystroke keeps the assertion byte-identical and keeps the
- * coverage; skipping the engine would forfeit it. This is emphatically NOT
- * loosening a test until it passes — the expectation does not move, only the
- * input that expresses "next tab stop" on that platform.
+ * So macOS WebKit's `Alt+Tab` yields the same order the other two give for
+ * `Tab`. Linux WebKit uses the ordinary `Tab` sequence, including in CI.
+ * Translating the keystroke only for macOS keeps the assertion byte-identical
+ * and keeps the coverage; skipping the engine would forfeit it. This is
+ * emphatically NOT loosening a test until it passes — the expectation does not
+ * move, only the input that expresses "next tab stop" on that platform.
  *
  * **The idiom inverts if Full Keyboard Access is ON**, where plain Tab reaches
  * everything and `Option+Tab` becomes the restricted order. This helper is
@@ -35,7 +36,8 @@ import type { Page } from '@playwright/test';
  * *textarea*, suspect that setting first.
  */
 export async function pressNextTabStop(page: Page, browserName: string): Promise<void> {
-	await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
+	const isMacOS = await page.evaluate(() => navigator.platform.startsWith('Mac'));
+	await page.keyboard.press(browserName === 'webkit' && isMacOS ? 'Alt+Tab' : 'Tab');
 }
 
 /**

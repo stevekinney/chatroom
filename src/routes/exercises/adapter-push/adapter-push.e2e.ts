@@ -187,6 +187,7 @@ test('out-of-order stream pushes degrade gracefully: no crash, no ghost message,
 	});
 
 	await gotoHydrated(page, '/exercises/adapter-push');
+	await page.clock.install();
 
 	const eventLog = page.getByTestId('event-log');
 	const messageWrappers = page.locator('.chat-message-wrapper');
@@ -217,6 +218,9 @@ test('out-of-order stream pushes degrade gracefully: no crash, no ghost message,
 	const log = page.getByRole('log', { name: 'Messages' });
 	await page.getByRole('textbox', { name: 'Message' }).fill('Still works');
 	await page.getByRole('button', { name: 'Send message' }).click();
+	// The fixture deliberately spaces tokens 15ms apart. Advance browser time so
+	// the recovery assertion tests stream state rather than host timer scheduling.
+	await page.clock.runFor(1000);
 	await expect(log.getByText('Still works')).toBeVisible();
 	await expect(
 		log.getByText("This entire reply streamed through the adapter's onStreamBegin")

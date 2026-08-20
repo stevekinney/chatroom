@@ -59,18 +59,15 @@ async function openSidebar(page: Page): Promise<void> {
  * usable. `data-position-ready` is the settled signal — until it flips, the
  * dialog carries `inert` and swallows every click.
  *
- * The click is deliberately offset to the row's top-left instead of using
- * Playwright's default centre point. The sidebar renders BELOW the editor (it
- * is the last child of `.review-editor-container`, not a column beside the
- * document), so the container is ~576px tall inside this route's fixed 30rem
- * wrapper and the last row overflows into the `Observed state` section that
- * follows. That section's `<h2>` paints over the row's lower half, and a
- * centre-point click on the bottom row really is intercepted by the heading —
- * in any browser, not just headless. `x: 12, y: 12` is a real mouse click on
- * the row, landing on the strip no other element covers.
+ * A plain default-centre click. This used to be offset to the row's top-left
+ * to dodge the `Observed state` section painting over the longest-quote row —
+ * a real defect for a mouse user, not just this spec, since it happened in
+ * every browser. `+page.svelte`'s editor wrapper now scrolls its own overflow
+ * instead of spilling into the next section, so nothing covers this row and a
+ * default click exercises the same path a real reviewer's pointer would.
  */
 async function selectThread(page: Page, row: Locator): Promise<Locator> {
-	await row.click({ position: { x: 12, y: 12 } });
+	await row.click();
 	const dialog = popover(page);
 	await expect(dialog).toHaveAttribute('data-position-ready', 'true');
 	await expect(dialog).toHaveJSProperty('inert', false);
@@ -1183,7 +1180,7 @@ test.describe('review comment lifecycle: sidebar selection is a delayed but canc
 		// the stale timer was actually cancelled rather than merely outraced, so
 		// it never fires to overwrite `popoverThreadId`/`popoverPosition` back to
 		// the thread the user already left.
-		await rowQuoted(page, 'Release Plan').click({ position: { x: 12, y: 12 } });
+		await rowQuoted(page, 'Release Plan').click();
 
 		const ghostAnchor = page.locator('span.comment-anchor[data-thread-id="t-empty"]');
 		await ghostAnchor.click();
@@ -1275,7 +1272,7 @@ test.describe('review comment lifecycle: sidebar selection is a delayed but canc
 		const dialogHandle = await dialog.elementHandle();
 		if (!dialogHandle) throw new Error('popover was not attached before the re-click');
 
-		await rowQuoted(page, 'Release Plan').click({ position: { x: 12, y: 12 } });
+		await rowQuoted(page, 'Release Plan').click();
 
 		// A fixed-delay-then-snapshot cannot pin "never destroyed": both
 		// `toBeAttached()`-style checks and `toHaveValue()` auto-retry toward

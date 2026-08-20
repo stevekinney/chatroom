@@ -940,9 +940,10 @@ test.describe('review-modes: snapshotMode, placeholder, and class', () => {
 		//
 		// `test.info().project.name` rather than the `browserName` fixture: this
 		// callback takes no arguments (the suite shares a module-level `page`), so
-		// the fixture is not destructurable here.
+		// the fixture is not destructurable here. WebKit is split into bounded
+		// projects so its browser process never crosses its context lifetime limit.
 		const quoted = (text: string) =>
-			test.info().project.name === 'webkit' ? `"${text}"` : `'${text}'`;
+			test.info().project.name.startsWith('webkit-') ? `"${text}"` : `'${text}'`;
 
 		expect(await inlinePlaceholder('modes-plain')).toBe(quoted('Start reviewing…'));
 		expect(await inlinePlaceholder('modes-edit')).toBe(quoted('Start writing...'));

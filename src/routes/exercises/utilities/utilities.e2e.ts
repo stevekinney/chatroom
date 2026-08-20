@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { gotoHydrated } from '../hydration';
 
-test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
-
 test('utility functions render correctly against the seeded conversation', async ({ page }) => {
 	await gotoHydrated(page, '/exercises/utilities');
 
@@ -57,8 +55,16 @@ const EXPECTED_ROLES = [
 ];
 
 test('ConversationExportActions: Markdown export matches the full expected structure', async ({
-	page
+	context,
+	page,
+	browserName
 }) => {
+	test.skip(
+		browserName !== 'chromium',
+		'Only Chromium maps both clipboard-read and clipboard-write permissions'
+	);
+
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 	await gotoHydrated(page, '/exercises/utilities');
 
 	const status = page.getByTestId('utilities-export-status');
@@ -106,8 +112,16 @@ test('ConversationExportActions: Markdown export matches the full expected struc
 });
 
 test('ConversationExportActions: JSON export round-trips the full conversation', async ({
-	page
+	context,
+	page,
+	browserName
 }) => {
+	test.skip(
+		browserName !== 'chromium',
+		'Only Chromium maps both clipboard-read and clipboard-write permissions'
+	);
+
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 	await gotoHydrated(page, '/exercises/utilities');
 
 	const status = page.getByTestId('utilities-export-status');
@@ -201,10 +215,12 @@ test('imperative Chat methods: announce, scroll, focus, and composer access', as
 	await expect(page.getByTestId('utilities-composer-value')).toHaveText('Composer value: ""');
 });
 
-test('announce("assertive") writes into the assertive live region and clears after ~1s', async ({
+test('announce("assertive") writes into the assertive live region and clears after its 1s delay', async ({
 	page
 }) => {
+	await page.clock.install();
 	await gotoHydrated(page, '/exercises/utilities');
+	await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
 
 	const chatWrapper = page.getByTestId('utilities-full-chat-wrapper');
 	// ChatStatusAnnouncer renders the assertive region as its own
@@ -214,15 +230,17 @@ test('announce("assertive") writes into the assertive live region and clears aft
 	await expect(assertiveRegion).toHaveCount(1);
 	await expect(assertiveRegion).toHaveText('');
 
+	const announcement = 'Assertive announcement: imperative announce() probe fired.';
 	await page.getByTestId('utilities-announce-assertive').click();
-	await expect(assertiveRegion).toHaveText(
-		'Assertive announcement: imperative announce() probe fired.'
-	);
+	await expect(assertiveRegion).toHaveText(announcement);
 
 	// Ground truth: Chat's own CONSUMER_ANNOUNCEMENT_CLEAR_DELAY_MS is 1000ms
-	// (container/chat.svelte) — poll for the region to empty out again rather
-	// than a fixed sleep, bounded to the documented delay plus margin.
-	await expect.poll(async () => assertiveRegion.textContent(), { timeout: 2000 }).toBe('');
+	// (container/chat.svelte). Advancing the browser clock fires that exact timer
+	// deterministically instead of relying on wall-clock scheduling under load.
+	await page.clock.runFor(999);
+	expect(await assertiveRegion.textContent()).toBe(announcement);
+	await page.clock.runFor(1);
+	expect(await assertiveRegion.textContent()).toBe('');
 });
 
 test('standalone building blocks render and behave correctly without the Chat shell', async ({
