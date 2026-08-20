@@ -42,8 +42,8 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.112.1",
 		"@lasercat/homogenaize": "^1.2.41",
-		"@lostgradient/chat": "^0.11.0",
-		"@lostgradient/cinder": "^0.24.6",
+		"@lostgradient/chat": "^0.11.1",
+		"@lostgradient/cinder": "^0.24.7",
 		"@lostgradient/editor": "^0.12.2",
 		"@lostgradient/markdown": "^0.3.0",
 		"@milkdown/ctx": "^7.17.3",
