@@ -8,7 +8,7 @@
 		appendUserMessage,
 		cancelStreamingMessage,
 		clearMessageDeliveryStatus,
-		createConversation,
+		createConversationHistory,
 		finalizeStreamingMessage,
 		markMessageDeliveryFailed,
 		isJSONValue,
@@ -50,7 +50,9 @@
 	// on approve. Not part of the rendered transcript.
 	const pendingApprovals = new SvelteMap<string, SignedPendingToolApproval>();
 
-	let conversation = $state<ConversationHistory>(createConversation({ id: 'chatroom-demo' }));
+	let conversation = $state<ConversationHistory>(
+		createConversationHistory({ id: 'chatroom-demo' })
+	);
 	let error = $state<string | null>(null);
 	let streaming = $state(false);
 

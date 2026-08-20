@@ -3,7 +3,7 @@
 		Chat,
 		DEFAULT_SCROLL_CONFIGURATION,
 		appendMessages,
-		createConversation,
+		createConversationHistory,
 		prependMessages,
 		type ChatAdapter,
 		type ChatAdapterErrorEvent,
@@ -58,7 +58,7 @@
 				content: `Live message ${index + 1} — enough padding text to give each row real height so the transcript reliably overflows the viewport and scrolling has somewhere to go.`
 			});
 		}
-		return appendMessages(createConversation({ id: 'history-scroll-demo' }), ...seedInputs);
+		return appendMessages(createConversationHistory({ id: 'history-scroll-demo' }), ...seedInputs);
 	}
 
 	let chat: ReturnType<typeof Chat> | undefined;

@@ -3,7 +3,7 @@ import {
 	appendStreamingMessage,
 	appendUserMessage,
 	cancelStreamingMessage,
-	createConversation,
+	createConversationHistory,
 	finalizeStreamingMessage,
 	markMessageDeliveryFailed,
 	updateStreamingMessage,
@@ -36,7 +36,7 @@ export function sleep(ms: number): Promise<void> {
 // message — `markMessageDeliveryFailed` stamps the delivery-status metadata
 // `ChatMessage` reads to show the "Failed to send" banner + retry button.
 export function seedConversation(id: string): ConversationHistory {
-	let conversation = createConversation({ id });
+	let conversation = createConversationHistory({ id });
 	conversation = appendUserMessage(conversation, 'What is the capital of deterministic testing?');
 	conversation = appendAssistantMessage(conversation, 'This reply failed to send.');
 	const failedId = conversation.ids[conversation.ids.length - 1];

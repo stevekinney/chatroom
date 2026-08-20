@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { DiffViewer, type DiffViewerMode } from '@lostgradient/editor/diff-viewer';
 	import type { DiffHunk } from '@lostgradient/markdown/diff/line-diff';
-	import { appendAssistantMessage, Chat, createConversation } from '@lostgradient/chat';
+	import { appendAssistantMessage, Chat, createConversationHistory } from '@lostgradient/chat';
 
 	// ROADMAP DV-1 / DV-2 / DV-3 — the standalone DiffViewer from
 	// `@lostgradient/editor/diff-viewer`, which until now this repo only ever
@@ -344,7 +344,7 @@
 		'The default renderer produced this paragraph, and the override chose to keep it.';
 
 	const chatConversation = appendAssistantMessage(
-		createConversation({ id: 'diff-viewer-dv2' }),
+		createConversationHistory({ id: 'diff-viewer-dv2' }),
 		CHAT_REPLY
 	);
 </script>

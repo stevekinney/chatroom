@@ -4,7 +4,7 @@
 		appendUserMessage,
 		Chat,
 		clearMessageDeliveryStatus,
-		createConversation,
+		createConversationHistory,
 		markMessageDeliveryFailed,
 		type ChatCapabilities,
 		type ChatSubmitEvent,
@@ -19,7 +19,7 @@
 	// `markMessageDeliveryFailed` stamps the delivery-status metadata
 	// `ChatMessage` reads to show the retry affordance).
 	function seedConversation(id: string): ConversationHistory {
-		let conversation = createConversation({ id });
+		let conversation = createConversationHistory({ id });
 		conversation = appendUserMessage(conversation, 'What is a deterministic chat exercise?');
 		conversation = appendAssistantMessage(
 			conversation,

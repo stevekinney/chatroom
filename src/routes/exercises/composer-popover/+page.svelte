@@ -3,7 +3,7 @@
 		appendAssistantMessage,
 		appendUserMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		type ChatSubmitEvent,
 		type ConversationHistory
 	} from '@lostgradient/chat';
@@ -56,7 +56,7 @@
 	let chat: ReturnType<typeof Chat> | undefined;
 
 	let conversation = $state<ConversationHistory>(
-		createConversation({ id: 'composer-popover-exercise' })
+		createConversationHistory({ id: 'composer-popover-exercise' })
 	);
 	let composerSnapshot = $state('');
 	let lastSelection = $state<{ label: string; score: number | null } | null>(null);

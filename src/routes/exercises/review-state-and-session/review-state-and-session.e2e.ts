@@ -309,11 +309,9 @@ test.describe.serial('review-state-and-session: modules the component does not c
 	test('a PersistedThread[] seeded through bind:threads is re-anchored and written back', async () => {
 		const container = editorContainer(page, 'state-persisted');
 
-		// The fixture is `PersistedThread[]` cast to `Thread[]`: anchors with
-		// quote/prefix/suffix/status and NO from/to. There is no exported
-		// `fromPersistedThreads`, and the session module's
-		// `fromPersistedDraftComment` only covers DRAFT comments, so casting is
-		// what a consumer restoring threads from storage actually reaches for.
+		// The fixture is `PersistedThread[]` converted through `toRuntimeThreads`:
+		// anchors with quote/prefix/suffix/status and a neutral 0/0 from/to
+		// sentinel — the exported converter for restoring threads from storage.
 		//
 		// The plugin verifies a seeded anchor against the document instead of
 		// trusting its numbers, so a missing range triggers re-anchoring: both

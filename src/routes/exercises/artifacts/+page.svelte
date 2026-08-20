@@ -5,7 +5,7 @@
 		Chat,
 		ChatArtifactLayout,
 		CINDER_ARTIFACT_METADATA_KEY,
-		createConversation,
+		createConversationHistory,
 		type ChatArtifact,
 		type ChatRowContext,
 		type ConversationHistory
@@ -76,7 +76,7 @@
 	 * convention added in chat 0.2.0).
 	 */
 	function buildConversation(): ConversationHistory {
-		let conversation = createConversation({ id: 'artifacts-demo' });
+		let conversation = createConversationHistory({ id: 'artifacts-demo' });
 
 		conversation = appendMessages(
 			conversation,

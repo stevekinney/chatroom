@@ -3,7 +3,7 @@
 		appendMessages,
 		appendStreamingMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		finalizeStreamingMessage,
 		updateStreamingMessage,
 		type ChatSubmitEvent,
@@ -82,7 +82,7 @@
 
 	let chat: ReturnType<typeof Chat> | undefined;
 	let conversation = $state<ConversationHistory>(
-		createConversation({ id: 'assistant-metadata-demo' })
+		createConversationHistory({ id: 'assistant-metadata-demo' })
 	);
 	let streaming = $state(false);
 	let overrides = $state<Record<string, MessageOverride>>({});

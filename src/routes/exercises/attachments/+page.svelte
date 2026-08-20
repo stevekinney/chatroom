@@ -3,7 +3,7 @@
 		appendAssistantMessage,
 		appendUserMessage,
 		Chat,
-		createConversation,
+		createConversationHistory,
 		deriveAttachmentKind,
 		MessageAttachments,
 		serializeChatAttachments,
@@ -30,7 +30,7 @@
 	);
 
 	let conversation = $state<ConversationHistory>(
-		createConversation({ id: 'attachments-exercise' })
+		createConversationHistory({ id: 'attachments-exercise' })
 	);
 	let events = $state<AttachmentEvent[]>([]);
 	let eventSeq = 0;
