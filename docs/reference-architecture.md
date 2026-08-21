@@ -14,7 +14,7 @@ This document is the design authority for CHR-3 through CHR-14. A downstream pul
 
 ## API surface and versioning
 
-The adoption target is `@lostgradient/operative@0.2.0`, pinned exactly and installed from the npm registry. As of August 20, 2026, npm publishes only [`@lostgradient/operative@0.1.0`](https://www.npmjs.com/package/@lostgradient/operative/v/0.1.0); `0.2.0` is still gated by [AB-24](https://linear.app/lost-gradient/issue/AB-24/publish-and-externally-verify-lostgradientoperative020). No downstream implementation may substitute a workspace link, source checkout, local tarball, patch, override, or another version while that gate is open.
+The adoption target is `@lostgradient/operative@0.2.0`, installed from the npm registry. The first adoption pull request must declare the dependency as the exact string `"0.2.0"` in `package.json`, with no caret, tilde, tag, or other range, and commit the corresponding registry resolution in `bun.lock`. As of August 20, 2026, npm publishes only [`@lostgradient/operative@0.1.0`](https://www.npmjs.com/package/@lostgradient/operative/v/0.1.0); `0.2.0` is still gated by [AB-24](https://linear.app/lost-gradient/issue/AB-24/publish-and-externally-verify-lostgradientoperative020). No downstream implementation may substitute a workspace link, source checkout, local tarball, patch, override, or another version while that gate is open.
 
 There are two evidence levels, and mixing them would make this document sound more certain than the registry allows:
 
@@ -29,13 +29,13 @@ npm view @lostgradient/operative@0.2.0 version dist.integrity dist.shasum dist.t
 
 It must then confirm every API named in this document against the installed declarations. Any mismatch blocks Chatroom work and belongs upstream; an internal export such as `createActiveRun` is not an acceptable substitute.
 
-Chatroom currently composes the Operative contract with `armorer@0.14.0`, `conversationalist@0.6.1`, and `@lostgradient/chat@0.11.2`. Those exact installed versions define the current `Toolbox`, `ConversationHistory`, conversation-builder, and `ChatAdapter` behavior. A dependency bump that changes one of those contracts requires the same re-verification.
+Chatroom currently composes the Operative contract with `armorer@0.14.0`, `conversationalist@0.6.1`, and `@lostgradient/chat@0.11.4`. Those exact installed versions define the current `Toolbox`, `ConversationHistory`, conversation-builder, and `ChatAdapter` behavior. A dependency bump that changes one of those contracts requires the same re-verification.
 
 <a id="dependency-provenance"></a>
 
 ## Dependency provenance
 
-Chatroom is a published-artifact testbed. `package.json` and `bun.lock` are the source of truth for what the application consumes, and the lockfile must resolve Operative through `https://registry.npmjs.org`. A green source-checkout test in Agent Bureau does not satisfy this boundary. Neither does a merged release pull request: the exact package must exist in npm and pass the external-consumer verification owned by AB-24.
+Chatroom is a published-artifact testbed. `package.json` and `bun.lock` are the source of truth for what the application consumes. Chatroom does not declare Operative yet; the first adoption pull request must add the exact dependency described above, and the resulting lockfile entry must resolve through `https://registry.npmjs.org`. A green source-checkout test in Agent Bureau does not satisfy this boundary. Neither does a merged release pull request: the exact package must exist in npm and pass the external-consumer verification owned by AB-24.
 
 <a id="state-model"></a>
 
@@ -43,7 +43,7 @@ Chatroom is a published-artifact testbed. `package.json` and `bun.lock` are the 
 
 The canonical model has two different owners on purpose:
 
-- The browser owns the authoritative `ConversationHistory` value rendered by `@lostgradient/chat@0.11.2`.
+- The browser owns the authoritative `ConversationHistory` value rendered by `@lostgradient/chat@0.11.4`.
 - The server owns an ephemeral `AgentRun` for one HTTP request and all authority needed to execute it.
 
 Operative owns the loop _within_ a request. The browser does not re-POST after every tool result and does not enforce a second client-side step cap. `createAgent({ maximumSteps, stopWhen, ... })` owns loop limits; `agent.run({ conversation })` snapshots the posted history and returns an `AgentRun`. The final run event returns the authoritative post-run history, which the browser reconciles into its state before considering the turn complete.
@@ -54,7 +54,7 @@ This is stateless in the server-persistence sense, not in the execution sense. O
 
 ## Conversation ownership
 
-The browser creates, renders, and stores `ConversationHistory` using the public builders re-exported by `@lostgradient/chat@0.11.2`. It sends `{ conversation }` to `/api/chat`. The server validates that boundary, then passes the value to `RunnableAgent.run({ conversation })` from `@lostgradient/operative@0.2.0`.
+The browser creates, renders, and stores `ConversationHistory` using the public builders re-exported by `@lostgradient/chat@0.11.4`. It sends `{ conversation }` to `/api/chat`. The server validates that boundary, then passes the value to `RunnableAgent.run({ conversation })` from `@lostgradient/operative@0.2.0`.
 
 Operative snapshots the input. It must never mutate the object supplied by the request parser, and the browser must never assume its posted object is being updated remotely. During a streamed run, wire events extend the browser's copy. On `run.completed`, the client reconciles the serialized `RunResult.conversation.current` as the final authority for that turn.
 
@@ -80,7 +80,7 @@ The secret must remain stable for at least as long as an approval descriptor can
 
 The agent parks with `stopWhen.pendingApproval()` combined with `stopWhen.noToolCalls()` from `@lostgradient/operative@0.2.0`. The combination matters: `pendingApproval()` stops after an approval-gated result, while `noToolCalls()` ends an ordinary text response instead of running to `maximumSteps`. The pending descriptor travels to the browser as tool activity. Approval or denial resolves that one call, replaces its existing `action_required` result, and starts a fresh run from the updated browser-owned history.
 
-The server never trusts a client-edited approval descriptor. `/api/chat/resume` validates its shape and lets `toolbox.resumeApproval()` verify the signature before execution.
+The server never trusts a client-edited approval descriptor. `/api/chat/resume` validates its shape and lets `toolbox.resumeApproval()` verify the signature before execution. Signature validity is necessary but not sufficient: the host atomically consumes each signed approval capability before the tool side effect begins. A second submission of the same capability returns the already-recorded outcome or a deterministic consumed-capability response; it never calls `resumeApproval()` again. The deployable stateless-host contract therefore includes a shared consumed-capability ledger keyed by the signed descriptor's stable identity. A process-local ledger is acceptable only for the documented local-development limitation and must not be presented as replay protection across restarts or server instances. `armorer@0.14.0` supplies signature verification through `Toolbox.resumeApproval()`; the atomic consumption ledger and its idempotency behavior are Chatroom host responsibilities.
 
 <a id="stream-wire-contract"></a>
 
@@ -107,6 +107,8 @@ The published `0.1.0` implementation does not prove the required timing for ever
 
 The `0.2.0` contract nests a completed event's terminal data under `result`; the wire follows that shape instead of flattening a second result vocabulary. The route may omit unrelated public events, but it may not rename a selected discriminant or forward internal provider events. Events from the streaming target and the run iterator enter one request-local sequencer before encoding, so their relative order is explicit rather than dependent on two consumers racing to call `controller.enqueue()`.
 
+The enhanced-streaming target must also be request-local. The published `0.1.0` `StreamEvent` union does not carry an `AgentRun` identifier, and `EventTarget` dispatch is broadcast, so a module-scoped target cannot distinguish overlapping requests. Under that baseline, each request constructs its own `TypedEventTarget<StreamEventMap>`, `withEnhancedStreaming(createAnthropicProviderStream(...), { eventTarget })` wrapper, and `RunnableAgent`, while reusing the module-scoped toolbox and immutable agent configuration. If the installed `0.2.0` declarations instead provide a stable public run identifier on every enhanced-streaming event, a shared target is allowed only when the listener filters on that identifier before sequencing. Arrival time, listener registration order, or conversation identity is not sufficient provenance.
+
 Exactly one terminal frame is written when the connection remains available. The server closes the stream immediately after that frame. EOF without a terminal frame is a truncated response and therefore a transport failure, not success. A client cancellation is the exception because the client deliberately stopped reading and cannot receive the terminal abort frame.
 
 <a id="cancellation-contract"></a>
@@ -125,7 +127,7 @@ ChatAdapter.stopGenerating()
   -> provider connection closes
 ```
 
-`AgentRun.abort()` and `[Symbol.dispose]()` are public `@lostgradient/operative@0.2.0` APIs. The route holds the run handle before constructing the response stream, calls `abort()` from `cancel()`, and disposes the handle in its one-shot cleanup path. Cleanup must be idempotent because provider failure, normal completion, request cancellation, and stream cancellation can race.
+`AgentRun.abort()` and `[Symbol.dispose]()` are public `@lostgradient/operative@0.2.0` APIs. The route holds the run handle before constructing the response stream, registers the incoming `Request.signal` with the run's one-shot abort-and-dispose path, calls the same path from `ReadableStream.cancel()`, and removes the request listener during cleanup. The request signal is required because a disconnect may abort the request before the client acquires or cancels the response body. Cleanup must be idempotent because provider failure, normal completion, request cancellation, and stream cancellation can race.
 
 A user stop is not an adapter error. The browser finalizes a non-empty partial assistant message, removes an empty placeholder with `cancelStreamingMessage()`, calls Chat's `endStreaming()`, and resolves `stopGenerating()`. It does not mark the user message failed and does not populate the error banner.
 
@@ -139,7 +141,7 @@ Errors cross three different boundaries. Keeping them separate prevents a denied
 - **Run errors**: provider, generation, output-validation, guardrail, budget, and runtime failures become a terminal `run.error` or `run.tripwire` frame owned by Chatroom's wire contract. Operative's published `RunResult.error` and `RunErrorEvent.error` values are `unknown`; the approved `0.2.0` Agent API specification does not replace them with an `AgentRunError` type. The host therefore owns any safe `kind`, `code`, and `message` envelope. It uses the public `classifyError()` helper from `@lostgradient/operative@0.1.0` for `category` and `retryable` where applicable, after verifying that helper in the installed `0.2.0` declarations. It never serializes an unknown error object or credential-bearing provider response directly.
 - **Tool outcomes**: success, denial, and `action_required` are transcript-domain results delivered through `tool.*` events. They update the conversation and tool UI. They are not `onadaptererror` events.
 
-The `ChatAdapter` rejects its active command for transport failures, malformed frames, truncated EOF, or terminal run failures. Before rejecting, it cancels the streaming placeholder and marks the initiating user message as failed so Chat's Retry affordance remains available. `@lostgradient/chat@0.11.2` then routes the rejection to `onadaptererror`, which owns the persistent page-level alert.
+The `ChatAdapter` rejects its active command for transport failures, malformed frames, truncated EOF, or terminal run failures. Before rejecting, it cancels the streaming placeholder and marks the initiating user message as failed so Chat's Retry affordance remains available. `@lostgradient/chat@0.11.4` then routes the rejection to `onadaptererror`, which owns the persistent page-level alert.
 
 No automatic host retry is added. Retry policy configured explicitly on `createAgent` is part of the agent loop; a user-visible Chat retry is a new adapter command from the unchanged client-owned history.
 
@@ -153,7 +155,7 @@ Guardrails and context management are agent-owned `createAgent` configuration in
 
 ## Lifecycle and disposal
 
-The canonical stateless route owns one `AgentRun` per request and disposes it after completion, error, or cancellation. Module-scoped objects are the agent definition, provider factory, and toolbox—not live runs or request conversations. Development hot-module replacement must not leave a run, provider connection, or toolbox listener orphaned.
+The canonical stateless route owns one `RunnableAgent` and one `AgentRun` per request and disposes the run after completion, error, or cancellation. Module-scoped objects are the immutable agent configuration, provider client or factory, toolbox, and deployable consumed-approval ledger—not an enhanced-streaming target, live run, or request conversation. Development hot-module replacement must not leave a run, provider connection, request listener, or toolbox listener orphaned.
 
 The server-owned session variant has a different lifecycle because the host owns a session store, a durable run engine, checkpoint storage, and workflow-service reconstruction. CHR-12 must document and test that route family's initialization and disposal boundary rather than borrowing the stateless route's lifecycle by implication. The public `@lostgradient/operative@0.2.0` APIs involved are the root session exports named below plus `createRunEngine()`, `createCheckpointStore()`, and `createRunWorkflow()` from the `/durable` export.
 
