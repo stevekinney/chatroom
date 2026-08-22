@@ -249,9 +249,13 @@ mutation gets read back, the same as any other Lost Gradient Linear write. If a 
 back for the primary coordinator to file—subagents hold no Linear write access, and only the
 coordinator writes to Linear.
 
-Only file a GitHub issue when the affected repository has no owning Linear team: a genuine
-third-party dependency, or a Lost Gradient repo that hasn't been onboarded to Linear yet. That is
-the last resort, not the default; the loop below applies to it exactly as written either way.
+Only file a GitHub issue when an **owned** repository has no owning Linear team—a Lost Gradient
+repo that hasn't been onboarded yet. That is the last resort, not the default, and the loop below
+applies to it exactly as written, because it is still ours to fix and release.
+
+None of this changes the third-party rule above: a dependency we do not own stays outside the
+loop entirely. We do not owe it a fix, a release, or a closed issue, and filing anything on
+someone else's project still needs you to ask first.
 
 ### The loop
 

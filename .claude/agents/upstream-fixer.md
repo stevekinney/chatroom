@@ -38,6 +38,12 @@ After merge, the changesets bot opens a `chore: version packages` PR. **Its work
 
 ## Coming back
 
+**`@lostgradient/cinder-mcp` has no sync path, so do not close on `sync:cinder` alone.** That
+script's `packages` array deliberately covers only the runtime upstream packages chatroom
+consumes; `cinder-mcp` is a devDependency and is excluded on purpose, so a released cinder-mcp fix
+will not arrive through it and the sync will still print a clean bill of health. Bump that one
+package explicitly, verify the installed version, and only then treat the loop as closed.
+
 Sync with `bun run sync:cinder`, then run the e2e suite and **expect committed tests to fail**. A behavior change arriving as a failing assertion is chatroom working as designed. Update those tests to the new contract and treat each failure as a fact about the release.
 
 Report what shipped back to whoever invoked you so they can close the Linear issue—you have no Linear write access, so that step isn't yours to take. If it was filed on GitHub instead (no owning team), close it yourself with `gh issue close` and a comment. Verify the state afterward rather than assuming.
