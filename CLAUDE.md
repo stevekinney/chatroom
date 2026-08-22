@@ -218,14 +218,44 @@ move on to unrelated work, with an upstream issue filed but not yet fixed, relea
 
 Do not work around it locally or patch-monkey it here.
 
-Route by package:
+Route by package—every one of these repos has an owning Linear team today, so file there, not on
+GitHub:
 
-- `@lostgradient/cinder`, `@lostgradient/chat`, or `@lostgradient/editor` → `stevekinney/cinder`
-- `conversationalist` or `armorer` → `stevekinney/agent-bureau` (both packages live in that
-  monorepo, under `packages/conversationalist` and `packages/armorer`)
+- `@lostgradient/cinder`, `@lostgradient/chat`, `@lostgradient/editor`, `@lostgradient/markdown`,
+  or `@lostgradient/cinder-mcp` → Linear team `CIN` (`stevekinney/cinder`)
+- `conversationalist` or `armorer` → Linear team `AB` (`stevekinney/agent-bureau`, both packages
+  live in that monorepo, under `packages/conversationalist` and `packages/armorer`)
+
+The workspace-wide team map lives in `~/.claude/CLAUDE.md`'s "Lost Gradient Linear operating
+rules" and in `~/Vaults/Lost Gradient/Linear Plan.md`. If a future upstream package's repo has no
+owning Linear team yet, GitHub is the fallback for that repo only—see "File in Linear first"
+below—not a general opt-out from filing.
 
 Anything else is a third-party dependency and this rule does not apply: report it, work around
 it if you must, and ask before filing anything on someone else's project.
+
+### File in Linear first
+
+Before opening a GitHub issue against `cinder` or `agent-bureau`, check whether the affected
+repository has an owning Linear team—both do today (`CIN` and `AB`, per the route above). When it
+does, file the issue there instead of on GitHub: the same shape the GitHub version would have
+used—a clear repro, the version chatroom consumes, expected vs. actual behavior, and what the fix
+needs to do—in the owning team, with a Work Type label. If the work you're filing it from is
+itself tracked as a Linear issue, create a native `blocked by` relation from that issue to the new
+upstream issue, never only in prose, per the Lost Gradient dependency model. Read the created
+issue back before trusting it exists; the primary coordinator is the sole Linear writer, and every
+mutation gets read back, the same as any other Lost Gradient Linear write. If a subagent (the
+`upstream-fixer` agent, for instance) is doing this work, it drafts the issue content and hands it
+back for the primary coordinator to file—subagents hold no Linear write access, and only the
+coordinator writes to Linear.
+
+Only file a GitHub issue when an **owned** repository has no owning Linear team—a Lost Gradient
+repo that hasn't been onboarded yet. That is the last resort, not the default, and the loop below
+applies to it exactly as written, because it is still ours to fix and release.
+
+None of this changes the third-party rule above: a dependency we do not own stays outside the
+loop entirely. We do not owe it a fix, a release, or a closed issue, and filing anything on
+someone else's project still needs you to ask first.
 
 ### The loop
 
